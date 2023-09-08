@@ -256,6 +256,10 @@ commands or using the scripting API.
 		validator: Validator.BOOLEAN,
 		default: true,
 	})
+	.option('--sparse <bool>', 'Does sparse things.', {
+		validator: Validator.BOOLEAN,
+		default: true,
+	})
 	.option(
 		'--palette-min <min>',
 		'Minimum number of blocks in the palette texture. If fewer unique ' +
@@ -321,6 +325,7 @@ commands or using the scripting API.
 			flatten: boolean;
 			join: boolean;
 			weld: boolean;
+			sparse: boolean;
 		};
 
 		// Baseline transforms.
@@ -347,8 +352,9 @@ commands or using the scripting API.
 		transforms.push(
 			resample({ ready: resampleReady, resample: resampleWASM }),
 			prune({ keepAttributes: false, keepLeaves: false }),
-			sparse(),
 		);
+		if (opts.sparse) 
+			transforms.push(sparse())
 
 		// Texture compression.
 		if (opts.textureCompress === 'ktx2') {
