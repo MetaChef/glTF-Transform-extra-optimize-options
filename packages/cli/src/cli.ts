@@ -256,7 +256,15 @@ commands or using the scripting API.
 		validator: Validator.BOOLEAN,
 		default: true,
 	})
-	.option('--sparse <bool>', 'Does sparse things.', {
+	.option('--sparse <bool>', 'Reduces storage for zero-filled arrays.', {
+		validator: Validator.BOOLEAN,
+		default: true,
+	})
+	.option('--resample <bool>', 'Resample animations, losslessly deduplicating keyframes.', {
+		validator: Validator.BOOLEAN,
+		default: true,
+	})
+	.option('--prune <bool>', 'Remove unreferenced properties from the file.', {
 		validator: Validator.BOOLEAN,
 		default: true,
 	})
@@ -326,6 +334,8 @@ commands or using the scripting API.
 			join: boolean;
 			weld: boolean;
 			sparse: boolean;
+			resample: boolean;
+			prune: boolean;
 		};
 
 		// Baseline transforms.
@@ -348,13 +358,10 @@ commands or using the scripting API.
 		if (opts.simplify) {
 			transforms.push(simplify({ simplifier: MeshoptSimplifier, error: opts.simplifyError }));
 		}
-
-		transforms.push(
-			resample({ ready: resampleReady, resample: resampleWASM }),
-			prune({ keepAttributes: false, keepLeaves: false }),
-		);
-		if (opts.sparse) 
-			transforms.push(sparse())
+		
+		if(opts.resample) transforms.push(resample({ ready: resampleReady, resample: resampleWASM }))
+		if(opts.prune) transforms.push(prune({ keepAttributes: false, keepLeaves: false }))
+		if (opts.sparse) transforms.push(sparse())
 
 		// Texture compression.
 		if (opts.textureCompress === 'ktx2') {
