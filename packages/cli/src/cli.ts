@@ -365,7 +365,7 @@ commands or using the scripting API.
 
 		// Texture compression.
 		if (opts.textureCompress === 'ktx2') {
-			const slotsUASTC = '{normalTexture,occlusionTexture,metallicRoughnessTexture}';
+			const slotsUASTC = /normalTexture|occlusionTexture|metallicRoughnessTexture/; // Use a regular expression
 			transforms.push(
 				toktx({ mode: Mode.UASTC, slots: slotsUASTC, level: 4, rdo: 4, zstd: 18 }),
 				toktx({ mode: Mode.ETC1S, quality: 255 }),
