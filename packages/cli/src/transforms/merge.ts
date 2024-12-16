@@ -9,20 +9,22 @@ import {
 	Buffer,
 	PropertyType,
 } from '@gltf-transform/core';
-import { dedup, unpartition } from '@gltf-transform/functions';
+import { dedup, mergeDocuments, unpartition } from '@gltf-transform/functions';
 
 const NAME = 'merge';
 
 export interface MergeOptions {
 	io: NodeIO;
 	paths: string[];
-	partition: boolean;
+	partition?: boolean;
+	mergeScenes?: boolean;
 }
 
 const merge = (options: MergeOptions): Transform => {
 	const { paths, io } = options;
 
 	return async (document: Document): Promise<void> => {
+		const root = document.getRoot();
 		const logger = document.getLogger();
 
 		for (let i = 0; i < paths.length; i++) {
@@ -39,13 +41,29 @@ const merge = (options: MergeOptions): Transform => {
 					.setMimeType(ImageUtils.extensionToMimeType(extension))
 					.setURI(basename + '.' + extension);
 			} else if (['gltf', 'glb'].includes(extension)) {
-				document.merge(renameScenes(basename, await io.read(path)));
+				mergeDocuments(document, renameScenes(basename, await io.read(path)));
 			} else {
 				throw new Error(`Unknown file extension: "${extension}".`);
 			}
 		}
 
-		document.getRoot().setDefaultScene(document.getRoot().listScenes()[0]);
+		const rootScene = root.listScenes()[0];
+
+		for (const scene of document.getRoot().listScenes()) {
+			if (scene === rootScene) {
+				root.setDefaultScene(rootScene);
+				continue;
+			}
+
+			if (!options.mergeScenes) continue;
+
+			for (const child of scene.listChildren()) {
+				scene.removeChild(child);
+				rootScene.addChild(child);
+			}
+
+			scene.dispose();
+		}
 
 		// De-duplicate textures, then ensure that all remaining textures and buffers
 		// have unique URIs. See https://github.com/donmccurdy/glTF-Transform/issues/586.

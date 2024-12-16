@@ -1,4 +1,4 @@
-import { Extension, GLTF, ReaderContext, WriterContext } from '@gltf-transform/core';
+import { Extension, GLTF, PropertyType, ReaderContext, WriterContext } from '@gltf-transform/core';
 import { KHR_MATERIALS_TRANSMISSION } from '../constants.js';
 import { Transmission } from './transmission.js';
 
@@ -13,6 +13,11 @@ interface TransmissionDef {
  * [`KHR_materials_transmission`](https://github.com/KhronosGroup/gltf/blob/main/extensions/2.0/Khronos/KHR_materials_transmission/)
  * provides a common type of optical transparency: infinitely-thin materials with no refraction,
  * scattering, or dispersion.
+ *
+ * ![Illustration](/media/extensions/khr-materials-transmission.png)
+ *
+ * > _**Figure:** Sphere using `KHR_materials_transmission` with varying roughness (0.0, 0.2, 0.4).
+ * > Source: Khronos Group._
  *
  * While default PBR materials using alpha blending become invisible as their opacity approaches
  * zero, a transmissive material continues to reflect light in a glass-like manner, even at low
@@ -42,8 +47,10 @@ interface TransmissionDef {
  * ```
  */
 export class KHRMaterialsTransmission extends Extension {
-	public readonly extensionName = NAME;
 	public static readonly EXTENSION_NAME = NAME;
+	public readonly extensionName = NAME;
+	public readonly prereadTypes = [PropertyType.MESH];
+	public readonly prewriteTypes = [PropertyType.MESH];
 
 	/** Creates a new Transmission property for use on a {@link Material}. */
 	public createTransmission(): Transmission {
@@ -51,7 +58,17 @@ export class KHRMaterialsTransmission extends Extension {
 	}
 
 	/** @hidden */
-	public read(context: ReaderContext): this {
+	public read(_context: ReaderContext): this {
+		return this;
+	}
+
+	/** @hidden */
+	public write(_context: WriterContext): this {
+		return this;
+	}
+
+	/** @hidden */
+	public preread(context: ReaderContext): this {
 		const jsonDoc = context.jsonDoc;
 		const materialDefs = jsonDoc.json.materials || [];
 		const textureDefs = jsonDoc.json.textures || [];
@@ -83,7 +100,7 @@ export class KHRMaterialsTransmission extends Extension {
 	}
 
 	/** @hidden */
-	public write(context: WriterContext): this {
+	public prewrite(context: WriterContext): this {
 		const jsonDoc = context.jsonDoc;
 
 		this.document

@@ -1,19 +1,35 @@
-import { BufferUtils, Document, ImageUtils, Texture, TextureChannel, Transform, vec2 } from '@gltf-transform/core';
+import {
+	BufferUtils,
+	Document,
+	FileUtils,
+	ImageUtils,
+	Texture,
+	TextureChannel,
+	Transform,
+	vec2,
+} from '@gltf-transform/core';
 import { EXTTextureAVIF, EXTTextureWebP } from '@gltf-transform/extensions';
 import { getTextureChannelMask } from './list-texture-channels.js';
 import { listTextureSlots } from './list-texture-slots.js';
 import type sharp from 'sharp';
-import { createTransform, fitWithin, formatBytes } from './utils.js';
-import { TextureResizeFilter } from './texture-resize.js';
+import { assignDefaults, createTransform, fitPowerOfTwo, fitWithin, formatBytes } from './utils.js';
 import { getPixels, savePixels } from 'ndarray-pixels';
 import ndarray from 'ndarray';
 import { lanczos2, lanczos3 } from 'ndarray-lanczos';
 
 const NAME = 'textureCompress';
 
-type Format = (typeof FORMATS)[number];
-const FORMATS = ['jpeg', 'png', 'webp', 'avif'] as const;
+type Format = (typeof TEXTURE_COMPRESS_SUPPORTED_FORMATS)[number];
+export const TEXTURE_COMPRESS_SUPPORTED_FORMATS = ['jpeg', 'png', 'webp', 'avif'] as const;
 const SUPPORTED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/avif'];
+
+/** Resampling filter methods. LANCZOS3 is sharper, LANCZOS2 is smoother. */
+export enum TextureResizeFilter {
+	/** Lanczos3 (sharp) */
+	LANCZOS3 = 'lanczos3',
+	/** Lanczos2 (smooth) */
+	LANCZOS2 = 'lanczos2',
+}
 
 export interface TextureCompressOptions {
 	/** Instance of the Sharp encoder, which must be installed from the
@@ -31,15 +47,25 @@ export interface TextureCompressOptions {
 	 * Resizes textures to given maximum width/height, preserving aspect ratio.
 	 * For example, a 4096x8192 texture, resized with limit [2048, 2048] will
 	 * be reduced to 1024x2048.
+	 *
+	 * Presets "nearest-pot", "ceil-pot", and "floor-pot" resize textures to
+	 * power-of-two dimensions, for older graphics APIs including WebGL 1.0.
 	 */
-	resize?: vec2;
+	resize?: vec2 | 'nearest-pot' | 'ceil-pot' | 'floor-pot';
 	/** Interpolation used if resizing. Default: TextureResizeFilter.LANCZOS3. */
 	resizeFilter?: TextureResizeFilter;
 	/** Pattern identifying textures to compress, matched to name or URI. */
 	pattern?: RegExp | null;
-	/** Pattern matching the format(s) to be compressed or converted. */
+	/**
+	 * Pattern matching the format(s) to be compressed or converted. Some examples
+	 * of formats include "jpeg" and "png".
+	 */
 	formats?: RegExp | null;
-	/** Pattern matching the material texture slot(s) to be compressed or converted. */
+	/**
+	 * Pattern matching the material texture slot(s) to be compressed or converted.
+	 * Some examples of slot names include "baseColorTexture", "occlusionTexture",
+	 * "metallicRoughnessTexture", and "normalTexture".
+	 */
 	slots?: RegExp | null;
 
 	/** Quality, 1-100. Default: auto. */
@@ -59,6 +85,13 @@ export interface TextureCompressOptions {
 	 * Sharp encoder is provided. Default: false.
 	 */
 	nearLossless?: boolean;
+
+	/**
+	 * Attempts to avoid processing images that could exceed memory or other other
+	 * limits, throwing an error instead. Default: true.
+	 * @experimental
+	 */
+	limitInputPixels?: boolean;
 }
 
 export type CompressTextureOptions = Omit<TextureCompressOptions, 'pattern' | 'formats' | 'slots'>;
@@ -73,6 +106,7 @@ export const TEXTURE_COMPRESS_DEFAULTS: Omit<TextureCompressOptions, 'resize' | 
 	effort: undefined,
 	lossless: false,
 	nearLossless: false,
+	limitInputPixels: true,
 };
 
 /**
@@ -113,7 +147,7 @@ export const TEXTURE_COMPRESS_DEFAULTS: Omit<TextureCompressOptions, 'resize' | 
  * @category Transforms
  */
 export function textureCompress(_options: TextureCompressOptions): Transform {
-	const options = { ...TEXTURE_COMPRESS_DEFAULTS, ..._options } as Required<TextureCompressOptions>;
+	const options = assignDefaults(TEXTURE_COMPRESS_DEFAULTS, _options);
 	const targetFormat = options.targetFormat as Format | undefined;
 	const patternRe = options.pattern;
 	const formatsRe = options.formats;
@@ -226,6 +260,7 @@ export async function compressTexture(texture: Texture, _options: CompressTextur
 	const options = { ...TEXTURE_COMPRESS_DEFAULTS, ..._options } as Required<CompressTextureOptions>;
 	const encoder = options.encoder as typeof sharp | null;
 
+	const srcURI = texture.getURI();
 	const srcFormat = getFormat(texture);
 	const dstFormat = options.targetFormat || srcFormat;
 	const srcMimeType = texture.getMimeType();
@@ -247,7 +282,7 @@ export async function compressTexture(texture: Texture, _options: CompressTextur
 		texture.setImage(dstImage);
 	} else {
 		// Overwrite, then update path and MIME type if src/dst formats differ.
-		const srcExtension = ImageUtils.mimeTypeToExtension(srcMimeType);
+		const srcExtension = srcURI ? FileUtils.extension(srcURI) : ImageUtils.mimeTypeToExtension(srcMimeType);
 		const dstExtension = ImageUtils.mimeTypeToExtension(dstMimeType);
 		const dstURI = texture.getURI().replace(new RegExp(`\\.${srcExtension}$`), `.${dstExtension}`);
 		texture.setImage(dstImage).setMimeType(dstMimeType).setURI(dstURI);
@@ -292,14 +327,15 @@ async function _encodeWithSharp(
 			break;
 	}
 
-	const instance = encoder(srcImage).toFormat(dstFormat, encoderOptions);
+	const limitInputPixels = options.limitInputPixels;
+	const instance = encoder(srcImage, { limitInputPixels }).toFormat(dstFormat, encoderOptions);
 
 	if (options.resize) {
-		instance.resize(options.resize[0], options.resize[1], {
-			fit: 'inside',
-			kernel: options.resizeFilter,
-			withoutEnlargement: true,
-		});
+		const srcSize = ImageUtils.getSize(srcImage, _srcMimeType)!;
+		const dstSize = Array.isArray(options.resize)
+			? fitWithin(srcSize, options.resize)
+			: fitPowerOfTwo(srcSize, options.resize);
+		instance.resize(dstSize[0], dstSize[1], { fit: 'fill', kernel: options.resizeFilter });
 	}
 
 	return BufferUtils.toView(await instance.toBuffer());
@@ -315,7 +351,9 @@ async function _encodeWithNdarrayPixels(
 
 	if (options.resize) {
 		const [w, h] = srcPixels.shape;
-		const dstSize = fitWithin([w, h], options.resize);
+		const dstSize = Array.isArray(options.resize)
+			? fitWithin([w, h], options.resize)
+			: fitPowerOfTwo([w, h], options.resize);
 		const dstPixels = ndarray(new Uint8Array(dstSize[0] * dstSize[1] * 4), [...dstSize, 4]);
 		options.resizeFilter === TextureResizeFilter.LANCZOS3
 			? lanczos3(srcPixels, dstPixels)
@@ -332,7 +370,7 @@ function getFormat(texture: Texture): Format {
 
 function getFormatFromMimeType(mimeType: string): Format {
 	const format = mimeType.split('/').pop() as Format | undefined;
-	if (!format || !FORMATS.includes(format)) {
+	if (!format || !TEXTURE_COMPRESS_SUPPORTED_FORMATS.includes(format)) {
 		throw new Error(`Unknown MIME type "${mimeType}".`);
 	}
 	return format;

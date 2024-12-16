@@ -58,7 +58,7 @@ Full command list:
 
 <!-- begin:cli_help -->
 ```plaintext
-  gltf-transform 3.6.0 — Command-line interface (CLI) for the glTF Transform SDK.
+  gltf-transform 4.1.1 — Command-line interface (CLI) for the glTF Transform SDK.
 
   USAGE 
   
@@ -97,7 +97,7 @@ Full command list:
     meshopt                              Compress geometry and animation with Meshopt           
     quantize                             Quantize geometry, reducing precision and memory       
     dequantize                           Dequantize geometry                                    
-    weld                                 Index geometry and optionally merge similar vertices   
+    weld                                 Merge equivalent vertices to optimize geometry         
     unweld                               De-index geometry, disconnecting any shared vertices   
     tangents                             Generate MikkTSpace vertex tangents                    
     reorder                              Optimize vertex data for locality of reference         
@@ -131,7 +131,7 @@ Full command list:
     -h, --help                           Display global help or command-related help.           
     -V, --version                        Display version.                                       
     -v, --verbose                        Verbose mode: will also output debug messages.         
-    --allow-http                         Allows reads from HTTP requests.                       
+    --allow-net                          Allows reads from network requests.                    
                                          boolean                                                
     --vertex-layout <layout>             Vertex buffer layout preset.                           
                                          one of "interleaved","separate", default: "interleaved"

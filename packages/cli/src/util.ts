@@ -3,6 +3,8 @@ import type { ChildProcess } from 'child_process';
 import _commandExists from 'command-exists';
 import CLITable from 'cli-table3';
 import { stringify } from 'csv-stringify';
+import stripAnsi from 'strip-ansi';
+import micromatch from 'micromatch';
 
 // Constants.
 
@@ -17,6 +19,12 @@ export const XMPContext: Record<string, string> = {
 // Using 'micromatch' because 'contains: true' did not work as expected with
 // minimatch. Need to ensure that '*' matches patterns like 'image/png'.
 export const MICROMATCH_OPTIONS = { nocase: true, contains: true };
+
+// See: https://github.com/micromatch/micromatch/issues/224
+export function regexFromArray(values: string[]): RegExp {
+	const pattern = values.map((s) => `(${s})`).join('|');
+	return micromatch.makeRe(pattern, MICROMATCH_OPTIONS);
+}
 
 // Mocks for tests.
 
@@ -59,8 +67,9 @@ export async function _waitExit(process: ChildProcess): Promise<[unknown, string
 
 // Formatting.
 
+const _longFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
 export function formatLong(x: number): string {
-	return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+	return _longFormatter.format(x);
 }
 
 export function formatBytes(bytes: number, decimals = 2): string {
@@ -127,7 +136,7 @@ export async function formatTable(format: TableFormat, head: string[], rows: str
 			const table = new CLITable({ head, chars: CLI_TABLE_MARKDOWN_CHARS });
 			table.push(new Array(rows[0].length).fill('---'));
 			table.push(...rows);
-			return table.toString();
+			return stripAnsi(table.toString());
 		}
 	}
 }

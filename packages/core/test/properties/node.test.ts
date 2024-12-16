@@ -1,5 +1,6 @@
 import test from 'ava';
 import { Document, MathUtils, mat4, vec3, vec4 } from '@gltf-transform/core';
+import { cloneDocument } from '@gltf-transform/functions';
 import { createPlatformIO } from '@gltf-transform/test-utils';
 
 test('parent', (t) => {
@@ -8,8 +9,8 @@ test('parent', (t) => {
 	const b = document.createNode('B');
 	const c = document.createNode('C');
 
-	// 1. adding node as child of node must de-parent from ≤1 node [and N scenes, tested in scene.test.ts]
-	// 2. adding node as child of scene must de-parent from ≤1 node [also tested in scene.test.ts]
+	// 1. adding node as child of node must de-parent from <=1 node [and N scenes, tested in scene.test.ts]
+	// 2. adding node as child of scene must de-parent from <=1 node [also tested in scene.test.ts]
 
 	a.addChild(c);
 	b.addChild(c);
@@ -118,7 +119,7 @@ test('identity transforms', async (t) => {
 		{
 			name: 'A',
 		},
-		'exclude identity transforms'
+		'exclude identity transforms',
 	);
 
 	t.deepEqual(
@@ -127,7 +128,7 @@ test('identity transforms', async (t) => {
 			name: 'B',
 			translation: [1, 2, 1],
 		},
-		'has only set transform info'
+		'has only set transform info',
 	);
 
 	t.deepEqual(
@@ -138,6 +139,25 @@ test('identity transforms', async (t) => {
 			rotation: [1, 0, 0, 0],
 			scale: [1, 2, 1],
 		},
-		'has transform info'
+		'has transform info',
 	);
+});
+
+test('getParentNode', (t) => {
+	const srcDocument = new Document();
+	const srcNodeA = srcDocument.createNode('A');
+	const srcNodeB = srcDocument.createNode('B');
+	const srcNodeC = srcDocument.createNode('C');
+	srcNodeA.addChild(srcNodeB).addChild(srcNodeC);
+
+	t.deepEqual(srcNodeA.listChildren(), [srcNodeB, srcNodeC], 'a.listChildren()');
+	t.is(srcNodeB.getParentNode(), srcNodeA, 'b.getParentNode()');
+	t.is(srcNodeC.getParentNode(), srcNodeA, 'c.getParentNode()');
+
+	const dstDocument = cloneDocument(srcDocument);
+	const [dstNodeA, dstNodeB, dstNodeC] = dstDocument.getRoot().listNodes();
+
+	t.deepEqual(dstNodeA.listChildren(), [dstNodeB, dstNodeC], 'a.listChildren()');
+	t.is(dstNodeB.getParentNode(), dstNodeA, 'b.getParentNode()');
+	t.is(dstNodeC.getParentNode(), dstNodeA, 'c.getParentNode()');
 });

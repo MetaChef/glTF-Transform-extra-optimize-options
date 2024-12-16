@@ -1,6 +1,6 @@
 {
 	"name": "@gltf-transform/functions",
-	"version": "3.6.0",
+	"version": "4.1.1",
 	"repository": "github:donmccurdy/glTF-Transform",
 	"homepage": "https://gltf-transform.dev/functions.html",
 	"description": "Functions for common glTF modifications, written using the core API",
@@ -24,9 +24,8 @@
 		"node >= 14"
 	],
 	"scripts": {
-		"dist": "microbundle --format modern,cjs",
-		"watch": "microbundle watch --format modern,cjs",
-		"watch:debug": "microbundle watch --format modern,cjs --no-compress"
+		"dist": "microbundle --format modern,cjs --no-compress",
+		"watch": "microbundle watch --format modern,cjs --no-compress"
 	},
 	"keywords": [
 		"gltf",
@@ -36,22 +35,23 @@
 		"threejs"
 	],
 	"dependencies": {
-		"@gltf-transform/core": "^3.6.0",
-		"@gltf-transform/extensions": "^3.6.0",
-		"ktx-parse": "^0.6.0",
+		"@gltf-transform/core": "^4.1.1",
+		"@gltf-transform/extensions": "^4.1.1",
+		"ktx-parse": "^0.7.1",
 		"ndarray": "^1.0.19",
 		"ndarray-lanczos": "^0.3.0",
-		"ndarray-pixels": "^3.0.4"
+		"ndarray-pixels": "^4.1.0"
 	},
 	"files": [
 		"dist/",
 		"src/",
 		"README.md",
+		"LICENSE.md",
 		"package.json",
 		"package-lock.json"
 	],
 	"publishConfig": {
 		"access": "public"
 	},
-	"gitHead": "405359aa647acc95d47f1da9ac11cb83060ab482"
+	"gitHead": "895b70777fda68aa321358d17dab2105e8564d08"
 }

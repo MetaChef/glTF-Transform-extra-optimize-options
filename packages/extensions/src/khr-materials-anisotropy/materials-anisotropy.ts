@@ -1,4 +1,4 @@
-import { Extension, GLTF, ReaderContext, WriterContext } from '@gltf-transform/core';
+import { Extension, GLTF, PropertyType, ReaderContext, WriterContext } from '@gltf-transform/core';
 import { KHR_MATERIALS_ANISOTROPY } from '../constants.js';
 import { Anisotropy } from './anisotropy.js';
 
@@ -13,6 +13,13 @@ interface AnisotropyDef {
 /**
  * [`KHR_materials_anisotropy`](https://github.com/KhronosGroup/gltf/blob/main/extensions/2.0/Khronos/KHR_materials_anisotropy/)
  * defines anisotropy (directionally-dependent reflections) on a PBR material.
+ *
+ * ![Illustration](/media/extensions/khr-materials-anisotropy.jpg)
+ *
+ * > _**Figure:** Effect of each color channel in the anisotropyTexture. Left
+ * > to right: the full anisotropy texture, filling the red channel with black,
+ * > filling the green channel with black, filling the blue channel with black.
+ * > Source: [Khronos Group & Wayfair](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/AnisotropyBarnLamp)._
  *
  * This extension defines the anisotropic property of a material as observable with brushed metals
  * for instance. An asymmetric specular lobe model is introduced to allow for such phenomena. The
@@ -45,8 +52,10 @@ interface AnisotropyDef {
  * ```
  */
 export class KHRMaterialsAnisotropy extends Extension {
-	public readonly extensionName = NAME;
 	public static readonly EXTENSION_NAME = NAME;
+	public readonly extensionName = NAME;
+	public readonly prereadTypes = [PropertyType.MESH];
+	public readonly prewriteTypes = [PropertyType.MESH];
 
 	/** Creates a new Anisotropy property for use on a {@link Material}. */
 	public createAnisotropy(): Anisotropy {
@@ -54,7 +63,17 @@ export class KHRMaterialsAnisotropy extends Extension {
 	}
 
 	/** @hidden */
-	public read(context: ReaderContext): this {
+	public read(_context: ReaderContext): this {
+		return this;
+	}
+
+	/** @hidden */
+	public write(_context: WriterContext): this {
+		return this;
+	}
+
+	/** @hidden */
+	public preread(context: ReaderContext): this {
 		const jsonDoc = context.jsonDoc;
 		const materialDefs = jsonDoc.json.materials || [];
 		const textureDefs = jsonDoc.json.textures || [];
@@ -89,7 +108,7 @@ export class KHRMaterialsAnisotropy extends Extension {
 	}
 
 	/** @hidden */
-	public write(context: WriterContext): this {
+	public prewrite(context: WriterContext): this {
 		const jsonDoc = context.jsonDoc;
 
 		this.document

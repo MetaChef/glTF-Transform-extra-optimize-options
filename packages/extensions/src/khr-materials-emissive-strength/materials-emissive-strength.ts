@@ -1,4 +1,4 @@
-import { Extension, ReaderContext, WriterContext } from '@gltf-transform/core';
+import { Extension, PropertyType, ReaderContext, WriterContext } from '@gltf-transform/core';
 import { KHR_MATERIALS_EMISSIVE_STRENGTH } from '../constants.js';
 import { EmissiveStrength } from './emissive-strength.js';
 
@@ -11,6 +11,13 @@ interface EmissiveStrengthDef {
 /**
  * [KHR_materials_emissive_strength](https://github.com/KhronosGroup/gltf/blob/main/extensions/2.0/Khronos/KHR_materials_emissive_strength/)
  * defines emissive strength and enables high-dynamic-range (HDR) emissive materials.
+ *
+ * ![Illustration](/media/extensions/khr-materials-emissive-strength.jpg)
+ *
+ * > _**Figure:** Cubes with emissive color #59BCF3 and emissive strength
+ * > increasing from 1 to 256 nits, left to right. Rendered in [three.js](https://threejs.org/),
+ * > with independent point lighting and a bloom effect.
+ * > Source: [Don McCurdy](https://www.donmccurdy.com/2024/04/27/emission-and-bloom/)._
  *
  * The core glTF 2.0 material model includes {@link Material.setEmissiveFactor `emissiveFactor`}
  * and {@link Material.setEmissiveTexture `emissiveTexture`} to control the color and intensity
@@ -46,8 +53,10 @@ interface EmissiveStrengthDef {
  * ```
  */
 export class KHRMaterialsEmissiveStrength extends Extension {
-	public readonly extensionName = NAME;
 	public static readonly EXTENSION_NAME = NAME;
+	public readonly extensionName = NAME;
+	public readonly prereadTypes = [PropertyType.MESH];
+	public readonly prewriteTypes = [PropertyType.MESH];
 
 	/** Creates a new EmissiveStrength property for use on a {@link Material}. */
 	public createEmissiveStrength(): EmissiveStrength {
@@ -55,7 +64,17 @@ export class KHRMaterialsEmissiveStrength extends Extension {
 	}
 
 	/** @hidden */
-	public read(context: ReaderContext): this {
+	public read(_context: ReaderContext): this {
+		return this;
+	}
+
+	/** @hidden */
+	public write(_context: WriterContext): this {
+		return this;
+	}
+
+	/** @hidden */
+	public preread(context: ReaderContext): this {
 		const jsonDoc = context.jsonDoc;
 		const materialDefs = jsonDoc.json.materials || [];
 		materialDefs.forEach((materialDef, materialIndex) => {
@@ -77,7 +96,7 @@ export class KHRMaterialsEmissiveStrength extends Extension {
 	}
 
 	/** @hidden */
-	public write(context: WriterContext): this {
+	public prewrite(context: WriterContext): this {
 		const jsonDoc = context.jsonDoc;
 
 		this.document

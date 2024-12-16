@@ -1,6 +1,7 @@
 import test from 'ava';
 import { Document, NodeIO } from '@gltf-transform/core';
 import { KHRMaterialsVolume, Volume } from '@gltf-transform/extensions';
+import { cloneDocument } from '@gltf-transform/functions';
 
 const WRITER_OPTIONS = { basename: 'extensionTest' };
 
@@ -36,7 +37,7 @@ test('basic', async (t) => {
 				attenuationColor: [0.1, 0.2, 0.3],
 			},
 		},
-		'writes volume extension'
+		'writes volume extension',
 	);
 	t.deepEqual(jsonDoc.json.extensionsUsed, [KHRMaterialsVolume.EXTENSION_NAME], 'writes extensionsUsed');
 
@@ -51,9 +52,6 @@ test('basic', async (t) => {
 	t.truthy(roundtripExt.getThicknessTexture(), 'reads thicknessTexture');
 	t.is(roundtripExt.getAttenuationDistance(), 2, 'reads attenuationDistance');
 	t.deepEqual(roundtripExt.getAttenuationColor(), [0.1, 0.2, 0.3], 'reads attenuationColor');
-
-	volume.setAttenuationColorHex(0x4285f4);
-	t.is(volume.getAttenuationColorHex(), 0x4285f4, 'reads/writes hexadecimal sRGB');
 });
 
 test('copy', (t) => {
@@ -67,7 +65,7 @@ test('copy', (t) => {
 		.setAttenuationColor([1, 0, 0]);
 	doc.createMaterial().setExtension('KHR_materials_volume', volume);
 
-	const doc2 = doc.clone();
+	const doc2 = cloneDocument(doc);
 	const volume2 = doc2.getRoot().listMaterials()[0].getExtension<Volume>('KHR_materials_volume');
 	t.is(doc2.getRoot().listExtensionsUsed().length, 1, 'copy KHRMaterialsVolume');
 	t.truthy(volume2, 'copy Volume');

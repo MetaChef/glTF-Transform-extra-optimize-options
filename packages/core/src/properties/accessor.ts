@@ -3,7 +3,6 @@ import type { GLTF } from '../types/gltf.js';
 import { MathUtils } from '../utils/index.js';
 import type { Buffer } from './buffer.js';
 import { ExtensibleProperty, IExtensibleProperty } from './extensible-property.js';
-import { COPY_IDENTITY } from './property.js';
 
 interface IAccessor extends IExtensibleProperty {
 	array: TypedArray | null;
@@ -39,7 +38,7 @@ interface IAccessor extends IExtensibleProperty {
  * const accessor = doc.createAccessor('myData')
  * 	.setArray(new Float32Array([1,2,3,4,5,6,7,8,9,10,11,12]))
  * 	.setType(Accessor.Type.VEC3)
- * 	.setBuffer(doc.listBuffers()[0]);
+ * 	.setBuffer(doc.getRoot().listBuffers()[0]);
  *
  * accessor.getCount();        // → 4
  * accessor.getElementSize();  // → 3
@@ -107,7 +106,7 @@ export class Accessor extends ExtensibleProperty<IAccessor> {
 		UNSIGNED_BYTE: 5121,
 		/**
 		 * 2-byte signed integer, stored as
-		 * {@link https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint16Array Uint16Array}.
+		 * {@link https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Int16Array Int16Array}.
 		 */
 		SHORT: 5122,
 		/**
@@ -144,19 +143,6 @@ export class Accessor extends ExtensibleProperty<IAccessor> {
 			sparse: false,
 			buffer: null,
 		});
-	}
-
-	/** @internal Inbound transform to normalized representation, if applicable. */
-	private _in = MathUtils.identity;
-
-	/** @internal Outbound transform from normalized representation, if applicable. */
-	private _out = MathUtils.identity;
-
-	public copy(other: this, resolve = COPY_IDENTITY): this {
-		super.copy(other, resolve);
-		this._in = other._in;
-		this._out = other._out;
-		return this;
 	}
 
 	/**********************************************************************************************
@@ -215,11 +201,17 @@ export class Accessor extends ExtensibleProperty<IAccessor> {
 	 * state.
 	 */
 	public getMinNormalized(target: number[]): number[] {
+		const normalized = this.getNormalized();
 		const elementSize = this.getElementSize();
+		const componentType = this.getComponentType();
 
 		this.getMin(target);
 
-		for (let j = 0; j < elementSize; j++) target[j] = this._out(target[j]);
+		if (normalized) {
+			for (let j = 0; j < elementSize; j++) {
+				target[j] = MathUtils.decodeNormalizedInt(target[j], componentType);
+			}
+		}
 
 		return target;
 	}
@@ -229,7 +221,7 @@ export class Accessor extends ExtensibleProperty<IAccessor> {
 	 * reflect normalization: use {@link .getMinNormalized} in that case.
 	 */
 	public getMin(target: number[]): number[] {
-		const array = this.get('array');
+		const array = this.getArray()!;
 		const count = this.getCount();
 		const elementSize = this.getElementSize();
 
@@ -237,7 +229,7 @@ export class Accessor extends ExtensibleProperty<IAccessor> {
 
 		for (let i = 0; i < count * elementSize; i += elementSize) {
 			for (let j = 0; j < elementSize; j++) {
-				const value = array![i + j];
+				const value = array[i + j];
 				if (Number.isFinite(value)) {
 					target[j] = Math.min(target[j], value);
 				}
@@ -253,11 +245,17 @@ export class Accessor extends ExtensibleProperty<IAccessor> {
 	 * state.
 	 */
 	public getMaxNormalized(target: number[]): number[] {
+		const normalized = this.getNormalized();
 		const elementSize = this.getElementSize();
+		const componentType = this.getComponentType();
 
 		this.getMax(target);
 
-		for (let j = 0; j < elementSize; j++) target[j] = this._out(target[j]);
+		if (normalized) {
+			for (let j = 0; j < elementSize; j++) {
+				target[j] = MathUtils.decodeNormalizedInt(target[j], componentType);
+			}
+		}
 
 		return target;
 	}
@@ -357,17 +355,7 @@ export class Accessor extends ExtensibleProperty<IAccessor> {
 	 * output data.
 	 */
 	public setNormalized(normalized: boolean): this {
-		this.set('normalized', normalized);
-
-		if (normalized) {
-			this._out = (c: number): number => MathUtils.decodeNormalizedInt(c, this.get('componentType'));
-			this._in = (f: number): number => MathUtils.encodeNormalizedInt(f, this.get('componentType'));
-		} else {
-			this._out = MathUtils.identity;
-			this._in = MathUtils.identity;
-		}
-
-		return this;
+		return this.set('normalized', normalized);
 	}
 
 	/**********************************************************************************************
@@ -375,46 +363,114 @@ export class Accessor extends ExtensibleProperty<IAccessor> {
 	 */
 
 	/**
-	 * Returns the scalar element value at the given index, accounting for normalization if
-	 * applicable.
+	 * Returns the scalar element value at the given index. For
+	 * {@link Accessor.getNormalized normalized} integer accessors, values are
+	 * decoded and returned in floating-point form.
 	 */
 	public getScalar(index: number): number {
 		const elementSize = this.getElementSize();
-		return this._out(this.get('array')![index * elementSize]);
+		const componentType = this.getComponentType();
+		const array = this.getArray()!;
+
+		if (this.getNormalized()) {
+			return MathUtils.decodeNormalizedInt(array[index * elementSize], componentType);
+		}
+
+		return array[index * elementSize];
 	}
 
 	/**
-	 * Assigns the scalar element value at the given index, accounting for normalization if
-	 * applicable.
+	 * Assigns the scalar element value at the given index. For
+	 * {@link Accessor.getNormalized normalized} integer accessors, "value" should be
+	 * given in floating-point form — it will be integer-encoded before writing
+	 * to the underlying array.
 	 */
 	public setScalar(index: number, x: number): this {
-		this.get('array')![index * this.getElementSize()] = this._in(x);
+		const elementSize = this.getElementSize();
+		const componentType = this.getComponentType();
+		const array = this.getArray()!;
+
+		if (this.getNormalized()) {
+			array[index * elementSize] = MathUtils.encodeNormalizedInt(x, componentType);
+		} else {
+			array[index * elementSize] = x;
+		}
+
 		return this;
 	}
 
 	/**
-	 * Returns the vector or matrix element value at the given index, accounting for normalization
-	 * if applicable.
+	 * Returns the vector or matrix element value at the given index. For
+	 * {@link Accessor.getNormalized normalized} integer accessors, values are
+	 * decoded and returned in floating-point form.
+	 *
+	 * Example:
+	 *
+	 * ```javascript
+	 * import { add } from 'gl-matrix/add';
+	 *
+	 * const element = [];
+	 * const offset = [1, 1, 1];
+	 *
+	 * for (let i = 0; i < accessor.getCount(); i++) {
+	 * 	accessor.getElement(i, element);
+	 * 	add(element, element, offset);
+	 * 	accessor.setElement(i, element);
+	 * }
+	 * ```
 	 */
-	public getElement(index: number, target: number[]): number[] {
+	public getElement<T extends number[]>(index: number, target: T): T {
+		const normalized = this.getNormalized();
 		const elementSize = this.getElementSize();
-		const array = this.get('array')!;
+		const componentType = this.getComponentType();
+		const array = this.getArray()!;
+
 		for (let i = 0; i < elementSize; i++) {
-			target[i] = this._out(array[index * elementSize + i]);
+			if (normalized) {
+				target[i] = MathUtils.decodeNormalizedInt(array[index * elementSize + i], componentType);
+			} else {
+				target[i] = array[index * elementSize + i];
+			}
 		}
+
 		return target;
 	}
 
 	/**
-	 * Assigns the vector or matrix element value at the given index, accounting for normalization
-	 * if applicable.
+	 * Assigns the vector or matrix element value at the given index. For
+	 * {@link Accessor.getNormalized normalized} integer accessors, "value" should be
+	 * given in floating-point form — it will be integer-encoded before writing
+	 * to the underlying array.
+	 *
+	 * Example:
+	 *
+	 * ```javascript
+	 * import { add } from 'gl-matrix/add';
+	 *
+	 * const element = [];
+	 * const offset = [1, 1, 1];
+	 *
+	 * for (let i = 0; i < accessor.getCount(); i++) {
+	 * 	accessor.getElement(i, element);
+	 * 	add(element, element, offset);
+	 * 	accessor.setElement(i, element);
+	 * }
+	 * ```
 	 */
 	public setElement(index: number, value: number[]): this {
+		const normalized = this.getNormalized();
 		const elementSize = this.getElementSize();
-		const array = this.get('array')!;
+		const componentType = this.getComponentType();
+		const array = this.getArray()!;
+
 		for (let i = 0; i < elementSize; i++) {
-			array![index * elementSize + i] = this._in(value[i]);
+			if (normalized) {
+				array[index * elementSize + i] = MathUtils.encodeNormalizedInt(value[i], componentType);
+			} else {
+				array[index * elementSize + i] = value[i];
+			}
 		}
+
 		return this;
 	}
 
@@ -460,7 +516,7 @@ export class Accessor extends ExtensibleProperty<IAccessor> {
 	}
 
 	/** Assigns the raw typed array underlying this accessor. */
-	public setArray(array: TypedArray): this {
+	public setArray(array: TypedArray | null): this {
 		this.set('componentType', array ? arrayToComponentType(array) : Accessor.ComponentType.FLOAT);
 		this.set('array', array);
 		return this;

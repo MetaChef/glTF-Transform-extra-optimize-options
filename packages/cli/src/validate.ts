@@ -1,6 +1,5 @@
-import fs from 'fs';
-import path from 'path';
-import validator from 'gltf-validator';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import type { ILogger } from '@gltf-transform/core';
 import { formatHeader, formatTable, TableFormat } from './util.js';
 
@@ -18,46 +17,57 @@ interface ValidatorMessage {
 	severity: number;
 }
 
-export function validate(input: string, options: ValidateOptions, logger: ILogger): void {
-	const buffer = fs.readFileSync(input);
+const HEADER = ['code', 'message', 'severity', 'pointer'];
+
+export async function validate(input: string, options: ValidateOptions, logger: ILogger): Promise<void> {
+	const [buffer, validator] = await Promise.all([fs.readFile(input), import('gltf-validator')]);
 	return validator
 		.validateBytes(new Uint8Array(buffer), {
 			maxIssues: options.limit,
 			ignoredIssues: options.ignore,
-			externalResourceFunction: (uri: string) =>
-				new Promise((resolve, reject) => {
-					uri = path.resolve(path.dirname(input), decodeURIComponent(uri));
-					fs.readFile(uri, (err, data) => {
-						if (err) logger.warn(`Unable to validate "${uri}": ${err.toString()}.`);
-						err ? reject(err.toString()) : resolve(data);
-					});
-				}),
+			externalResourceFunction: (uri: string) => {
+				uri = path.resolve(path.dirname(input), decodeURIComponent(uri));
+				return fs.readFile(uri).catch((err) => {
+					logger.warn(`Unable to validate "${uri}": ${err.toString()}.`);
+					throw err.toString();
+				});
+			},
 		})
 		.then(async (report: ValidatorReport) => {
-			await printIssueSection('error', 0, report, logger, options.format);
-			await printIssueSection('warning', 1, report, logger, options.format);
-			await printIssueSection('info', 2, report, logger, options.format);
-			await printIssueSection('hint', 3, report, logger, options.format);
+			if (options.format === TableFormat.CSV) {
+				await printCSV(report);
+			} else {
+				await printTable('error', 0, report, logger, options.format);
+				await printTable('warning', 1, report, logger, options.format);
+				await printTable('info', 2, report, logger, options.format);
+				await printTable('hint', 3, report, logger, options.format);
+			}
+			return report;
+		})
+		.then((report: ValidatorReport) => {
+			if (report.issues.messages.some((message) => message.severity === 0)) {
+				throw new Error('Validation detected errors.');
+			}
 		});
 }
 
-async function printIssueSection(
+async function printCSV(report: ValidatorReport): Promise<void> {
+	const messages = report.issues.messages;
+	console.log(await formatTable(TableFormat.CSV, HEADER, messages.map(Object.values)));
+	return;
+}
+
+async function printTable(
 	header: string,
 	severity: number,
 	report: ValidatorReport,
 	logger: ILogger,
-	format: TableFormat
+	format: TableFormat,
 ): Promise<void> {
 	console.log(formatHeader(header));
 	const messages = report.issues.messages.filter((msg) => msg.severity === severity);
 	if (messages.length) {
-		console.log(
-			(await formatTable(
-				format,
-				['code', 'message', 'severity', 'pointer'],
-				messages.map((m) => Object.values(m))
-			)) + '\n\n'
-		);
+		console.log(await formatTable(format, HEADER, messages.map(Object.values)));
 	} else {
 		logger.info(`No ${header}s found.`);
 	}

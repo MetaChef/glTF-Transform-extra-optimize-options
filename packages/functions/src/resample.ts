@@ -8,11 +8,10 @@ import {
 	PropertyType,
 	Root,
 	Transform,
-	TransformContext,
 	TypedArray,
 } from '@gltf-transform/core';
 import { dedup } from './dedup.js';
-import { createTransform, isTransformPending } from './utils.js';
+import { assignDefaults, createTransform } from './utils.js';
 import { resampleDebug } from 'keyframe-resample';
 
 const NAME = 'resample';
@@ -23,39 +22,56 @@ export interface ResampleOptions {
 	ready?: Promise<void>;
 	resample?: unknown; // glTF-Transform/issues/996
 	tolerance?: number;
+	/**
+	 * Whether to perform cleanup steps after completing the operation. Recommended, and enabled by
+	 * default. Cleanup removes temporary resources created during the operation, but may also remove
+	 * pre-existing unused or duplicate resources in the {@link Document}. Applications that require
+	 * keeping these resources may need to disable cleanup, instead calling {@link dedup} and
+	 * {@link prune} manually (with customized options) later in the processing pipeline.
+	 * @experimental
+	 */
+	cleanup?: boolean;
 }
 
 const RESAMPLE_DEFAULTS: Required<ResampleOptions> = {
 	ready: Promise.resolve(),
 	resample: resampleDebug,
 	tolerance: 1e-4,
+	cleanup: true,
 };
 
 /**
- * Resample {@link Animation}s, losslessly deduplicating keyframes to reduce file size. Duplicate
- * keyframes are commonly present in animation 'baked' by the authoring software to apply IK
- * constraints or other software-specific features. Based on THREE.KeyframeTrack.optimize().
+ * Resample {@link AnimationChannel AnimationChannels}, losslessly deduplicating keyframes to
+ * reduce file size. Duplicate keyframes are commonly present in animation 'baked' by the
+ * authoring software to apply IK constraints or other software-specific features.
+ *
+ * Optionally, a WebAssembly implementation from the
+ * [`keyframe-resample`](https://github.com/donmccurdy/keyframe-resample-wasm) library may be
+ * provided. The WebAssembly version is usually much faster at processing large animation
+ * sequences, but may not be compatible with all runtimes and JavaScript build tools.
  *
  * Result: (0,0,0,0,1,1,1,0,0,0,0,0,0,0) → (0,0,1,1,0,0)
  *
  * Example:
  *
  * ```
- * import { ready, resample } from 'keyframe-resample';
+ * import { resample } from '@gltf-transform/functions';
+ * import { ready, resample as resampleWASM } from 'keyframe-resample';
  *
  * // JavaScript (slower)
  * await document.transform(resample());
  *
  * // WebAssembly (faster)
- * await document.transform(resample({ ready, resample }));
+ * await document.transform(resample({ ready, resample: resampleWASM }));
  * ```
  *
+ * @privateRemarks Implementation based on THREE.KeyframeTrack#optimize().
  * @category Transforms
  */
 export function resample(_options: ResampleOptions = RESAMPLE_DEFAULTS): Transform {
-	const options = { ...RESAMPLE_DEFAULTS, ..._options } as Required<ResampleOptions>;
+	const options = assignDefaults(RESAMPLE_DEFAULTS, _options);
 
-	return createTransform(NAME, async (document: Document, context?: TransformContext): Promise<void> => {
+	return createTransform(NAME, async (document: Document): Promise<void> => {
 		const accessorsVisited = new Set<Accessor>();
 		const srcAccessorCount = document.getRoot().listAccessors().length;
 		const logger = document.getLogger();
@@ -90,7 +106,7 @@ export function resample(_options: ResampleOptions = RESAMPLE_DEFAULTS): Transfo
 					const tmpValues = toFloat32Array(
 						output.getArray()!,
 						output.getComponentType(),
-						output.getNormalized()
+						output.getNormalized(),
 					);
 
 					const elementSize = tmpValues.length / tmpTimes.length;
@@ -114,12 +130,12 @@ export function resample(_options: ResampleOptions = RESAMPLE_DEFAULTS): Transfo
 						const dstTimes = fromFloat32Array(
 							new Float32Array(tmpTimes.buffer, tmpTimes.byteOffset, dstCount),
 							input.getComponentType(),
-							input.getNormalized()
+							input.getNormalized(),
 						);
 						const dstValues = fromFloat32Array(
 							new Float32Array(tmpValues.buffer, tmpValues.byteOffset, dstCount * elementSize),
 							output.getComponentType(),
-							output.getNormalized()
+							output.getNormalized(),
 						);
 
 						input.setArray(EMPTY_ARRAY);
@@ -143,7 +159,7 @@ export function resample(_options: ResampleOptions = RESAMPLE_DEFAULTS): Transfo
 		// Resampling may result in duplicate input or output sampler
 		// accessors. Find and remove the duplicates after processing.
 		const dstAccessorCount = document.getRoot().listAccessors().length;
-		if (dstAccessorCount > srcAccessorCount && !isTransformPending(context, NAME, 'dedup')) {
+		if (dstAccessorCount > srcAccessorCount && options.cleanup) {
 			await document.transform(dedup({ propertyTypes: [PropertyType.ACCESSOR] }));
 		}
 
@@ -155,7 +171,7 @@ export function resample(_options: ResampleOptions = RESAMPLE_DEFAULTS): Transfo
 function toFloat32Array(
 	srcArray: TypedArray,
 	componentType: GLTF.AccessorComponentType,
-	normalized: boolean
+	normalized: boolean,
 ): Float32Array {
 	if (srcArray instanceof Float32Array) return srcArray.slice();
 	const dstArray = new Float32Array(srcArray);
@@ -172,7 +188,7 @@ function toFloat32Array(
 function fromFloat32Array(
 	srcArray: Float32Array,
 	componentType: GLTF.AccessorComponentType,
-	normalized: boolean
+	normalized: boolean,
 ): TypedArray {
 	if (componentType === Accessor.ComponentType.FLOAT) return srcArray.slice();
 	const TypedArray = ComponentTypeToTypedArray[componentType];

@@ -22,7 +22,7 @@ export async function inspect(
 	jsonDoc: JSONDocument,
 	io: NodeIO | WebIO,
 	logger: ILogger,
-	format: TableFormat
+	format: TableFormat,
 ): Promise<void> {
 	// Summary (does not require parsing).
 	const extensionsUsed = jsonDoc.json.extensionsUsed || [];
@@ -37,8 +37,8 @@ export async function inspect(
 				['generator', jsonDoc.json.asset.generator || ''],
 				['extensionsUsed', extensionsUsed.join(', ') || 'none'],
 				['extensionsRequired', extensionsRequired.join(', ') || 'none'],
-			]
-		)) + '\n\n'
+			],
+		)) + '\n\n',
 	);
 
 	// Parse.
@@ -58,8 +58,8 @@ export async function inspect(
 			(await formatTable(
 				format,
 				['key', 'value'],
-				rootPacket.listProperties().map((name) => [name, formatXMP(rootPacket.getProperty(name)) as string])
-			)) + '\n\n'
+				rootPacket.listProperties().map((name) => [name, formatXMP(rootPacket.getProperty(name)) as string]),
+			)) + '\n\n',
 		);
 	}
 
@@ -76,7 +76,7 @@ async function reportSection(
 	type: string,
 	format: TableFormat,
 	logger: ILogger,
-	section: InspectPropertyReport<AnyPropertyReport>
+	section: InspectPropertyReport<AnyPropertyReport>,
 ) {
 	const properties = section.properties;
 
@@ -121,23 +121,43 @@ function formatPropertyReport(property: AnyPropertyReport, index: number, format
 
 function getFootnotes(type: string, rows: string[][], header: string[]): string[] {
 	const footnotes = [];
+	if (type === 'scenes') {
+		for (let i = 0; i < header.length; i++) {
+			if (header[i] === 'renderVertexCount') header[i] += '¹';
+			if (header[i] === 'gpuVertexCount') header[i] += '²';
+			if (header[i] === 'gpuNaiveVertexCount') header[i] += '³';
+		}
+		footnotes.push(
+			'¹ Expected number of vertices processed by the vertex shader for one render\n' +
+				'  pass, without considering the vertex cache.\n',
+		);
+		footnotes.push(
+			'² Expected number of vertices uploaded to GPU, assuming each Accessor\n' +
+				'  is uploaded only once. Actual number uploaded may be higher, \n' +
+				'  dependent on the implementation and vertex buffer layout.\n',
+		);
+		footnotes.push(
+			'³ Expected number of vertices uploaded to GPU, assuming each Primitive\n' +
+				'  is uploaded once, duplicating vertex attributes shared among Primitives.',
+		);
+	}
 	if (type === 'meshes') {
 		for (let i = 0; i < header.length; i++) {
 			if (header[i] === 'size') header[i] += '¹';
 		}
 		footnotes.push(
-			'¹ size estimates GPU memory required by a mesh, in isolation. If accessors are\n' +
+			'⁴ size estimates GPU memory required by a mesh, in isolation. If accessors are\n' +
 				'  shared by other mesh primitives, but the meshes themselves are not reused, then\n' +
-				'  the sum of all mesh sizes will overestimate the asset\'s total size. See "dedup".'
+				'  the sum of all mesh sizes will overestimate the asset\'s total size. See "dedup".',
 		);
 	}
 	if (type === 'textures') {
 		for (let i = 0; i < header.length; i++) {
-			if (header[i] === 'gpuSize') header[i] += '¹';
+			if (header[i] === 'gpuSize') header[i] += '⁵';
 		}
 		footnotes.push(
-			'¹ gpuSize estimates minimum VRAM memory allocation. Older devices may require\n' +
-				'  additional memory for GPU compression formats.'
+			'⁵ gpuSize estimates minimum VRAM memory allocation. Older devices may require\n' +
+				'  additional memory for GPU compression formats.',
 		);
 	}
 	return footnotes;

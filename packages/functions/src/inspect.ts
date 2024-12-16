@@ -10,6 +10,7 @@ import {
 } from '@gltf-transform/core';
 import { getGLPrimitiveCount } from './utils.js';
 import { KHR_DF_MODEL_ETC1S, KHR_DF_MODEL_UASTC, read as readKTX } from 'ktx-parse';
+import { VertexCountMethod, getMeshVertexCount, getSceneVertexCount } from './get-vertex-count.js';
 
 /** Inspects the contents of a glTF file and returns a JSON report. */
 export function inspect(doc: Document): InspectReport {
@@ -35,6 +36,9 @@ function listScenes(doc: Document): InspectPropertyReport<InspectSceneReport> {
 				rootName: root ? root.getName() : '',
 				bboxMin: toPrecision(sceneBounds.min),
 				bboxMax: toPrecision(sceneBounds.max),
+				renderVertexCount: getSceneVertexCount(scene, VertexCountMethod.RENDER),
+				uploadVertexCount: getSceneVertexCount(scene, VertexCountMethod.UPLOAD),
+				uploadNaiveVertexCount: getSceneVertexCount(scene, VertexCountMethod.UPLOAD_NAIVE),
 			};
 		});
 	return { properties: scenes };
@@ -48,7 +52,6 @@ function listMeshes(doc: Document): InspectPropertyReport<InspectMeshReport> {
 		.map((mesh) => {
 			const instances = mesh.listParents().filter((parent) => parent.propertyType !== PropertyType.ROOT).length;
 			let glPrimitives = 0;
-			let verts = 0;
 			const semantics = new Set<string>();
 			const meshIndices = new Set<string>();
 			const meshAccessors: Set<Accessor> = new Set();
@@ -67,7 +70,6 @@ function listMeshes(doc: Document): InspectPropertyReport<InspectMeshReport> {
 					meshIndices.add(accessorToTypeLabel(indices));
 					meshAccessors.add(indices);
 				}
-				verts += prim.listAttributes()[0].getCount();
 				glPrimitives += getGLPrimitiveCount(prim);
 			});
 
@@ -79,9 +81,9 @@ function listMeshes(doc: Document): InspectPropertyReport<InspectMeshReport> {
 			return {
 				name: mesh.getName(),
 				mode: Array.from(new Set(modes)),
-				primitives: mesh.listPrimitives().length,
+				meshPrimitives: mesh.listPrimitives().length,
 				glPrimitives: glPrimitives,
-				vertices: verts,
+				vertices: getMeshVertexCount(mesh, VertexCountMethod.UPLOAD),
 				indices: Array.from(meshIndices).sort(),
 				attributes: Array.from(semantics).sort(),
 				instances: instances,
@@ -240,11 +242,14 @@ export interface InspectSceneReport {
 	rootName: string;
 	bboxMin: number[];
 	bboxMax: number[];
+	renderVertexCount: number;
+	uploadVertexCount: number;
+	uploadNaiveVertexCount: number;
 }
 
 export interface InspectMeshReport {
 	name: string;
-	primitives: number;
+	meshPrimitives: number;
 	mode: string[];
 	vertices: number;
 	glPrimitives: number;

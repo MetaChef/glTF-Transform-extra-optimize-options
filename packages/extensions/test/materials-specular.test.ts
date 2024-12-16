@@ -1,6 +1,7 @@
 import test from 'ava';
 import { Document, NodeIO } from '@gltf-transform/core';
 import { KHRMaterialsSpecular, Specular } from '@gltf-transform/extensions';
+import { cloneDocument } from '@gltf-transform/functions';
 
 const WRITER_OPTIONS = { basename: 'extensionTest' };
 
@@ -36,7 +37,7 @@ test('basic', async (t) => {
 				specularColorTexture: { index: 1 },
 			},
 		},
-		'writes specular extension'
+		'writes specular extension',
 	);
 	t.deepEqual(jsonDoc.json.extensionsUsed, [KHRMaterialsSpecular.EXTENSION_NAME], 'writes extensionsUsed');
 
@@ -63,7 +64,7 @@ test('copy', (t) => {
 		.setSpecularColorTexture(doc.createTexture('specColor'));
 	doc.createMaterial().setExtension('KHR_materials_specular', specular);
 
-	const doc2 = doc.clone();
+	const doc2 = cloneDocument(doc);
 	const specular2 = doc2.getRoot().listMaterials()[0].getExtension<Specular>('KHR_materials_specular');
 	t.is(doc2.getRoot().listExtensionsUsed().length, 1, 'copy KHRMaterialsSpecular');
 	t.truthy(specular2, 'copy Specular');
@@ -71,11 +72,4 @@ test('copy', (t) => {
 	t.deepEqual(specular2.getSpecularColorFactor(), [0.9, 0.5, 0.8], 'copy specularColorFactor');
 	t.is(specular2.getSpecularTexture().getName(), 'spec', 'copy specularTexture');
 	t.is(specular2.getSpecularColorTexture().getName(), 'specColor', 'copy specularColorTexture');
-});
-
-test('hex', (t) => {
-	const doc = new Document();
-	const specularExtension = doc.createExtension(KHRMaterialsSpecular);
-	const specular = specularExtension.createSpecular().setSpecularColorHex(0x252525);
-	t.is(specular.getSpecularColorHex(), 0x252525, 'specularColorHex');
 });

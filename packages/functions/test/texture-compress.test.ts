@@ -1,7 +1,7 @@
 import test from 'ava';
 import { Document } from '@gltf-transform/core';
 import { EXTTextureWebP } from '@gltf-transform/extensions';
-import { textureCompress } from '@gltf-transform/functions';
+import { compressTexture, textureCompress } from '@gltf-transform/functions';
 import { logger } from '@gltf-transform/test-utils';
 import ndarray from 'ndarray';
 import { savePixels } from 'ndarray-pixels';
@@ -125,6 +125,28 @@ test('jpeg', async (t) => {
 	t.deepEqual(texturePNG.getImage(), EXPECTED_JPEG, 'png optimized');
 });
 
+test('jpeg / jpg', async (t) => {
+	const { encoder } = createMockEncoder();
+
+	const document = new Document().setLogger(logger);
+	const textureJPEG = document.createTexture().setImage(ORIGINAL_JPEG).setMimeType('image/jpeg').setURI('a.jpeg');
+	const textureJPG = document.createTexture().setImage(ORIGINAL_JPEG).setMimeType('image/jpeg').setURI('b.jpg');
+
+	await document.transform(textureCompress({ encoder, formats: /.*/i, slots: /.*/i }));
+
+	t.is(textureJPEG.getMimeType(), 'image/jpeg', 'jpeg → image/jpeg');
+	t.is(textureJPG.getMimeType(), 'image/jpeg', 'jpg → image/jpeg');
+	t.is(textureJPEG.getURI(), 'a.jpeg', '.jpeg → .jpeg');
+	t.is(textureJPG.getURI(), 'b.jpg', '.jpg → .jpg');
+
+	await document.transform(textureCompress({ encoder, targetFormat: 'webp', formats: /.*/i, slots: /.*/i }));
+
+	t.is(textureJPEG.getMimeType(), 'image/webp', 'jpeg → image/webp');
+	t.is(textureJPG.getMimeType(), 'image/webp', 'jpg → image/webp');
+	t.is(textureJPEG.getURI(), 'a.webp', '.jpeg → .webp');
+	t.is(textureJPG.getURI(), 'b.webp', '.jpg → .webp');
+});
+
 test('png', async (t) => {
 	const { encoder, calls } = createMockEncoder();
 	const document = new Document().setLogger(logger);
@@ -210,6 +232,56 @@ test('fallback to ndarray-pixels', async (t) => {
 	t.deepEqual(textureB.getSize(), [64, 128]);
 });
 
+test('resize - sharp', async (t) => {
+	const document = new Document();
+	const srcImage = await savePixels(ndarray(new Uint8Array(200 * 350 * 4), [200, 350, 4]), 'image/png');
+	const srcTexture = document.createTexture().setImage(srcImage).setMimeType('image/png');
+
+	const dstTextureCeil = srcTexture.clone();
+	const dstTextureFloor = srcTexture.clone();
+	const dstTextureNearest = srcTexture.clone();
+	const dstTexture200x200 = srcTexture.clone();
+	const dstTexture1024x1024 = srcTexture.clone();
+
+	const { encoder, calls } = createMockEncoder();
+
+	await compressTexture(dstTextureCeil, { encoder, resize: 'ceil-pot' });
+	await compressTexture(dstTextureFloor, { encoder, resize: 'floor-pot' });
+	await compressTexture(dstTextureNearest, { encoder, resize: 'nearest-pot' });
+	await compressTexture(dstTexture200x200, { encoder, resize: [200, 200] });
+	await compressTexture(dstTexture1024x1024, { encoder, resize: [1024, 1024] });
+
+	t.deepEqual(calls[1][1].slice(0, 2), [256, 512], 'ceil - sharp');
+	t.deepEqual(calls[3][1].slice(0, 2), [128, 256], 'floor - sharp');
+	t.deepEqual(calls[5][1].slice(0, 2), [256, 256], 'nearest - sharp');
+	t.deepEqual(calls[7][1].slice(0, 2), [114, 200], '200x200 - sharp');
+	t.deepEqual(calls[9][1].slice(0, 2), [200, 350], '1024x1024 - sharp');
+});
+
+test('resize - ndarray-pixels', async (t) => {
+	const document = new Document();
+	const srcImage = await savePixels(ndarray(new Uint8Array(200 * 350 * 4), [200, 350, 4]), 'image/png');
+	const srcTexture = document.createTexture().setImage(srcImage).setMimeType('image/png');
+
+	const dstTextureCeil = srcTexture.clone();
+	const dstTextureFloor = srcTexture.clone();
+	const dstTextureNearest = srcTexture.clone();
+	const dstTexture200x200 = srcTexture.clone();
+	const dstTexture1024x1024 = srcTexture.clone();
+
+	await compressTexture(dstTextureCeil, { resize: 'ceil-pot' });
+	await compressTexture(dstTextureFloor, { resize: 'floor-pot' });
+	await compressTexture(dstTextureNearest, { resize: 'nearest-pot' });
+	await compressTexture(dstTexture200x200, { resize: [200, 200] });
+	await compressTexture(dstTexture1024x1024, { resize: [1024, 1024] });
+
+	t.deepEqual(dstTextureCeil.getSize(), [256, 512], 'ceil - ndarray-pixels');
+	t.deepEqual(dstTextureFloor.getSize(), [128, 256], 'floor - ndarray-pixels');
+	t.deepEqual(dstTextureNearest.getSize(), [256, 256], 'nearest - ndarray-pixels');
+	t.deepEqual(dstTexture200x200.getSize(), [114, 200], '200x200 - ndarray-pixels');
+	t.deepEqual(dstTexture1024x1024.getSize(), [200, 350], '1024x1024 - ndarray-pixels');
+});
+
 function createMockEncoder() {
 	const calls = [];
 
@@ -229,6 +301,12 @@ function createMockEncoder() {
 			this.calls.push(call);
 			return this;
 		}
+		resize(...args) {
+			const call = ['resize', args];
+			calls.push(call);
+			this.calls.push(call);
+			return this;
+		}
 		async toBuffer(): Promise<Uint8Array> {
 			if (this.calls.length === 0) {
 				switch (this.image) {
@@ -243,7 +321,7 @@ function createMockEncoder() {
 				}
 			}
 
-			const lastCall = this.calls[this.calls.length - 1];
+			const lastCall = findLast(this.calls, ([name]) => name === 'toFormat');
 			const format = lastCall[1][0];
 			switch (format) {
 				case 'png':
@@ -261,4 +339,11 @@ function createMockEncoder() {
 	}
 
 	return { encoder, calls };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function findLast(calls: any[], fn: (call: any) => boolean): any {
+	for (let i = calls.length - 1; i >= 0; i--) {
+		if (fn(calls[i])) return calls[i];
+	}
 }

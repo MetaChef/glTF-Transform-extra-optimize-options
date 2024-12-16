@@ -1,6 +1,8 @@
 import test from 'ava';
 import { Document, NodeIO } from '@gltf-transform/core';
-import { KHRTextureTransform, Transform } from '@gltf-transform/extensions';
+import { Clearcoat, KHRMaterialsClearcoat, KHRTextureTransform, Transform } from '@gltf-transform/extensions';
+import { cloneDocument } from '@gltf-transform/functions';
+import { logger } from '@gltf-transform/test-utils';
 
 const WRITER_OPTIONS = { basename: 'extensionTest' };
 
@@ -18,13 +20,13 @@ test('basic', async (t) => {
 		.getBaseColorTextureInfo()
 		.setExtension(
 			'KHR_texture_transform',
-			transformExtension.createTransform().setTexCoord(2).setScale([100, 100])
+			transformExtension.createTransform().setTexCoord(2).setScale([100, 100]),
 		);
 	mat.setEmissiveTexture(tex2)
 		.getEmissiveTextureInfo()
 		.setExtension(
 			'KHR_texture_transform',
-			transformExtension.createTransform().setTexCoord(1).setOffset([0.5, 0.5]).setRotation(Math.PI)
+			transformExtension.createTransform().setTexCoord(1).setOffset([0.5, 0.5]).setRotation(Math.PI),
 		);
 	mat.setOcclusionTexture(tex3);
 
@@ -54,7 +56,7 @@ test('basic', async (t) => {
 	t.falsy(mat.getBaseColorTextureInfo().getExtension('KHR_texture_transform'), 'clears baseColorTexture transform');
 	t.falsy(
 		mat.getEmissiveTextureInfo().getExtension('KHR_texture_transform'),
-		'clears emissiveColorTexture transform'
+		'clears emissiveColorTexture transform',
 	);
 });
 
@@ -71,19 +73,19 @@ test('clone', (t) => {
 		.getBaseColorTextureInfo()
 		.setExtension(
 			'KHR_texture_transform',
-			transformExtension.createTransform().setTexCoord(2).setScale([100, 100])
+			transformExtension.createTransform().setTexCoord(2).setScale([100, 100]),
 		);
 	srcMat
 		.setEmissiveTexture(tex2)
 		.getEmissiveTextureInfo()
 		.setExtension(
 			'KHR_texture_transform',
-			transformExtension.createTransform().setTexCoord(1).setOffset([0.5, 0.5]).setRotation(Math.PI)
+			transformExtension.createTransform().setTexCoord(1).setOffset([0.5, 0.5]).setRotation(Math.PI),
 		);
 	srcMat.setOcclusionTexture(tex3);
 
 	// Clone the Document.
-	const dstDoc = srcDoc.clone();
+	const dstDoc = cloneDocument(srcDoc);
 
 	// Ensure source Document is unchanged.
 
@@ -130,7 +132,7 @@ test('i/o', async (t) => {
 		.getEmissiveTextureInfo()
 		.setExtension(
 			'KHR_texture_transform',
-			transformExtension.createTransform().setTexCoord(0).setOffset([0.5, 0.5]).setRotation(Math.PI)
+			transformExtension.createTransform().setTexCoord(0).setOffset([0.5, 0.5]).setRotation(Math.PI),
 		);
 
 	const jsonDoc = await io.writeJSON(doc, WRITER_OPTIONS);
@@ -141,11 +143,79 @@ test('i/o', async (t) => {
 	t.deepEqual(
 		baseColorTextureInfoDef.extensions,
 		{ KHR_texture_transform: { scale: [100, 100] } }, // omit texCoord!
-		'base color texture info'
+		'base color texture info',
 	);
 	t.deepEqual(
 		emissiveTextureInfoDef.extensions,
 		{ KHR_texture_transform: { texCoord: 0, offset: [0.5, 0.5], rotation: Math.PI } },
-		'emissive texture info'
+		'emissive texture info',
 	);
+});
+
+// See https://github.com/donmccurdy/glTF-Transform/issues/1256.
+test('order independence', async (t) => {
+	const documentA = new Document().setLogger(logger);
+	const documentB = new Document().setLogger(logger);
+
+	documentA.createBuffer();
+	documentB.createBuffer();
+
+	// KHR_texture_transform before KHR_materials_clearcoat
+	const ioA = new NodeIO().setLogger(logger).registerExtensions([KHRTextureTransform, KHRMaterialsClearcoat]);
+	const transformExtensionA = documentA.createExtension(KHRTextureTransform);
+	const clearcoatExtensionA = documentA.createExtension(KHRMaterialsClearcoat);
+
+	// KHR_materials_clearcoat before KHR_texture_transform
+	const ioB = new NodeIO().setLogger(logger).registerExtensions([KHRMaterialsClearcoat, KHRTextureTransform]);
+	const clearcoatExtensionB = documentB.createExtension(KHRMaterialsClearcoat);
+	const transformExtensionB = documentB.createExtension(KHRTextureTransform);
+
+	const fixtures = [
+		['transform then clearcoat', ioA, documentA, transformExtensionA, clearcoatExtensionA],
+		['clearcoat then transform', ioB, documentB, transformExtensionB, clearcoatExtensionB],
+	] as [string, NodeIO, Document, KHRTextureTransform, KHRMaterialsClearcoat][];
+
+	for (const [title, io, document, transformExtension, clearcoatExtension] of fixtures) {
+		const texture = document.createTexture().setMimeType('image/png').setImage(new Uint8Array(10));
+		const transform = transformExtension.createTransform().setScale([100, 100]);
+		const material = document.createMaterial().setBaseColorTexture(texture);
+		material.getBaseColorTextureInfo()!.setExtension('KHR_texture_transform', transform);
+
+		const clearcoat = clearcoatExtension.createClearcoat().setClearcoatTexture(texture);
+		clearcoat.getClearcoatTextureInfo()!.setExtension('KHR_texture_transform', transform);
+		material.setExtension('KHR_materials_clearcoat', clearcoat);
+
+		const { json, resources } = await io.writeJSON(document);
+
+		t.deepEqual(
+			json.materials,
+			[
+				{
+					extensions: {
+						KHR_materials_clearcoat: {
+							clearcoatFactor: 0,
+							clearcoatRoughnessFactor: 0,
+							clearcoatTexture: {
+								extensions: { KHR_texture_transform: { scale: [100, 100] } },
+								index: 0,
+							},
+						},
+					},
+					pbrMetallicRoughness: {
+						baseColorTexture: {
+							extensions: { KHR_texture_transform: { scale: [100, 100] } },
+							index: 0,
+						},
+					},
+				},
+			],
+			`writes material (${title})`,
+		);
+
+		const dstDocument = await io.readJSON({ json, resources });
+		const dstMaterial = dstDocument.getRoot().listMaterials()[0];
+		const dstClearcoat = dstMaterial.getExtension<Clearcoat>('KHR_materials_clearcoat');
+		const dstTransform = dstClearcoat.getClearcoatTextureInfo()!.getExtension<Transform>('KHR_texture_transform');
+		t.deepEqual(dstTransform.getScale(), [100, 100], `reads transform.scale (${title})`);
+	}
 });

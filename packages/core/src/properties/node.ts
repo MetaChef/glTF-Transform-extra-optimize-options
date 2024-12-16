@@ -1,6 +1,6 @@
 import { multiply } from 'gl-matrix/mat4';
+import { RefSet } from 'property-graph';
 import { PropertyType, mat4, vec3, vec4, Nullable } from '../constants.js';
-import { $attributes } from 'property-graph';
 import { MathUtils } from '../utils/index.js';
 import type { Camera } from './camera.js';
 import { ExtensibleProperty, IExtensibleProperty } from './extensible-property.js';
@@ -17,7 +17,7 @@ interface INode extends IExtensibleProperty {
 	camera: Camera;
 	mesh: Mesh;
 	skin: Skin;
-	children: Node[];
+	children: RefSet<Node>;
 }
 
 /**
@@ -49,19 +49,6 @@ interface INode extends IExtensibleProperty {
 export class Node extends ExtensibleProperty<INode> {
 	public declare propertyType: PropertyType.NODE;
 
-	/**
-	 * Internal reference to ≤1 parent Nodes, omitted from {@link Graph}.
-	 * @internal
-	 * @privateRemarks Requires non-graph state.
-	 */
-	public _parentNode: Node | null = null;
-	/**
-	 * Internal reference to N parent scenes, omitted from {@link Graph}.
-	 * @internal
-	 * @privateRemarks Requires non-graph state.
-	 */
-	public _parentScenes = new Set<Scene>();
-
 	protected init(): void {
 		this.propertyType = PropertyType.NODE;
 	}
@@ -75,7 +62,7 @@ export class Node extends ExtensibleProperty<INode> {
 			camera: null,
 			mesh: null,
 			skin: null,
-			children: [],
+			children: new RefSet<Node>(),
 		});
 	}
 
@@ -126,7 +113,7 @@ export class Node extends ExtensibleProperty<INode> {
 			this.get('translation'),
 			this.get('rotation'),
 			this.get('scale'),
-			[] as unknown as mat4
+			[] as unknown as mat4,
 		);
 	}
 
@@ -168,8 +155,7 @@ export class Node extends ExtensibleProperty<INode> {
 	public getWorldMatrix(): mat4 {
 		// Build ancestor chain.
 		const ancestors: Node[] = [];
-		// eslint-disable-next-line @typescript-eslint/no-this-alias
-		for (let node: Node | null = this; node != null; node = node._parentNode) {
+		for (let node: Node | null = this; node != null; node = node.getParentNode()) {
 			ancestors.push(node);
 		}
 
@@ -199,28 +185,18 @@ export class Node extends ExtensibleProperty<INode> {
 	 * The `addChild` method enforces these restrictions automatically, and will
 	 * remove the new child from previous parents where needed. This behavior
 	 * may change in future major releases of the library.
-	 *
-	 * @privateRemarks Requires non-graph state.
 	 */
 	public addChild(child: Node): this {
 		// Remove existing parents.
-		if (child._parentNode) child._parentNode.removeChild(child);
-		if (child._parentScenes.size) {
-			for (const scene of child._parentScenes) {
-				scene.removeChild(child);
+		const parentNode = child.getParentNode();
+		if (parentNode) parentNode.removeChild(child);
+		for (const parent of child.listParents()) {
+			if (parent.propertyType === PropertyType.SCENE) {
+				(parent as Scene).removeChild(child);
 			}
 		}
 
-		// Edge in graph.
-		this.addRef('children', child);
-
-		// Set new parent.
-		// TODO(cleanup): Avoid reaching into $attributes.
-		child._parentNode = this;
-		const childrenRefs = this[$attributes]['children'];
-		const ref = childrenRefs[childrenRefs.length - 1];
-		ref.addEventListener('dispose', () => (child._parentNode = null));
-		return this;
+		return this.addRef('children', child);
 	}
 
 	/** Removes a Node from this Node's child Node list. */
@@ -233,13 +209,6 @@ export class Node extends ExtensibleProperty<INode> {
 		return this.listRefs('children');
 	}
 
-	/** @deprecated Use {@link Node.getParentNode} and {@link listNodeScenes} instead. */
-	public getParent(): SceneNode | null {
-		if (this._parentNode) return this._parentNode;
-		const scene = this.listParents().find((parent) => parent.propertyType === PropertyType.SCENE);
-		return (scene as unknown as SceneNode) || null;
-	}
-
 	/**
 	 * Returns the Node's unique parent Node within the scene graph. If the
 	 * Node has no parents, or is a direct child of the {@link Scene}
@@ -249,7 +218,12 @@ export class Node extends ExtensibleProperty<INode> {
 	 * references from properties of any type ({@link Skin}, {@link Root}, ...).
 	 */
 	public getParentNode(): Node | null {
-		return this._parentNode;
+		for (const parent of this.listParents()) {
+			if (parent.propertyType === PropertyType.NODE) {
+				return parent as Node;
+			}
+		}
+		return null;
 	}
 
 	/**********************************************************************************************
@@ -315,11 +289,4 @@ export class Node extends ExtensibleProperty<INode> {
 		for (const child of this.listChildren()) child.traverse(fn);
 		return this;
 	}
-}
-
-interface SceneNode {
-	propertyType: PropertyType;
-	_parent?: SceneNode | null;
-	addChild(node: Node): this;
-	removeChild(node: Node): this;
 }

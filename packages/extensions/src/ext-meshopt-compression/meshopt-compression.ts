@@ -5,6 +5,7 @@ import {
 	Extension,
 	GLB_BUFFER,
 	GLTF,
+	Property,
 	PropertyType,
 	ReaderContext,
 	WriterContext,
@@ -31,8 +32,6 @@ type EncodedBufferView = GLTF.IBufferView & MeshoptBufferView;
 /**
  * [`EXT_meshopt_compression`](https://github.com/KhronosGroup/gltf/blob/main/extensions/2.0/Vendor/EXT_meshopt_compression/)
  * provides compression and fast decoding for geometry, morph targets, and animations.
- *
- * [[include:_VENDOR_EXTENSIONS.md]]
  *
  * Meshopt compression (based on the [meshoptimizer](https://github.com/zeux/meshoptimizer)
  * library) offers a lightweight decoder with very fast runtime decompression, and is
@@ -280,9 +279,22 @@ export class EXTMeshoptCompression extends Extension {
 		const json = context.jsonDoc.json;
 		const encoder = this._encoder!;
 		const options = this._encoderOptions;
+		const graph = this.document.getGraph();
 
 		const fallbackBuffer = this.document.createBuffer(); // Disposed on write.
 		const fallbackBufferIndex = this.document.getRoot().listBuffers().indexOf(fallbackBuffer);
+
+		let nextID = 1;
+		const parentToID = new Map<Property, number>();
+		const getParentID = (property: Property): number => {
+			for (const parent of graph.listParents(property)) {
+				if (parent.propertyType === PropertyType.ROOT) continue;
+				let id = parentToID.get(property);
+				if (id === undefined) parentToID.set(property, (id = nextID++));
+				return id;
+			}
+			return -1;
+		};
 
 		this._encoderFallbackBuffer = fallbackBuffer;
 		this._encoderBufferViews = {};
@@ -298,6 +310,7 @@ export class EXTMeshoptCompression extends Extension {
 			if (accessor.getSparse()) continue;
 
 			const usage = context.getAccessorUsage(accessor);
+			const parentID = context.accessorUsageGroupedByParent.has(usage) ? getParentID(accessor) : null;
 			const mode = getMeshoptMode(accessor, usage);
 			const filter =
 				options.method === EncoderMethod.FILTER
@@ -311,7 +324,7 @@ export class EXTMeshoptCompression extends Extension {
 			const bufferIndex = this.document.getRoot().listBuffers().indexOf(buffer);
 
 			// Buffer view grouping key.
-			const key = [usage, mode, filter.filter, byteStride, bufferIndex].join(':');
+			const key = [usage, parentID, mode, filter.filter, byteStride, bufferIndex].join(':');
 
 			let bufferView = this._encoderBufferViews[key];
 			let bufferViewData = this._encoderBufferViewData[key];

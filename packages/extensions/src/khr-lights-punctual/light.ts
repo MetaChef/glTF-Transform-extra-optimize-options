@@ -1,5 +1,4 @@
 import { ExtensionProperty, IProperty, Nullable, PropertyType, vec3 } from '@gltf-transform/core';
-import { ColorUtils } from '@gltf-transform/core';
 import { KHR_LIGHTS_PUNCTUAL } from '../constants.js';
 
 interface ILight extends IProperty {
@@ -67,18 +66,6 @@ export class Light extends ExtensionProperty<ILight> {
 		return this.set('color', color);
 	}
 
-	/** Light color; sRGB hexadecimal color. */
-	public getColorHex(): number {
-		return ColorUtils.factorToHex(this.getColor());
-	}
-
-	/** Light color; sRGB hexadecimal color. */
-	public setColorHex(hex: number): this {
-		const color = this.getColor().slice() as vec3;
-		ColorUtils.hexToFactor(hex, color);
-		return this.setColor(color);
-	}
-
 	/**********************************************************************************************
 	 * INTENSITY.
 	 */
@@ -140,7 +127,7 @@ export class Light extends ExtensionProperty<ILight> {
 	 */
 
 	/**
-	 * Angle, in radians, from centre of spotlight where falloff begins. Must be ≥ 0 and
+	 * Angle, in radians, from centre of spotlight where falloff begins. Must be >= 0 and
 	 * < outerConeAngle.
 	 */
 	public getInnerConeAngle(): number {
@@ -148,7 +135,7 @@ export class Light extends ExtensionProperty<ILight> {
 	}
 
 	/**
-	 * Angle, in radians, from centre of spotlight where falloff begins. Must be ≥ 0 and
+	 * Angle, in radians, from centre of spotlight where falloff begins. Must be >= 0 and
 	 * < outerConeAngle.
 	 */
 	public setInnerConeAngle(angle: number): this {
@@ -157,7 +144,7 @@ export class Light extends ExtensionProperty<ILight> {
 
 	/**
 	 * Angle, in radians, from centre of spotlight where falloff ends. Must be > innerConeAngle and
-	 * ≤ PI / 2.0.
+	 * <= PI / 2.0.
 	 */
 	public getOuterConeAngle(): number {
 		return this.get('outerConeAngle');
@@ -165,7 +152,7 @@ export class Light extends ExtensionProperty<ILight> {
 
 	/**
 	 * Angle, in radians, from centre of spotlight where falloff ends. Must be > innerConeAngle and
-	 * ≤ PI / 2.0.
+	 * <= PI / 2.0.
 	 */
 	public setOuterConeAngle(angle: number): this {
 		return this.set('outerConeAngle', angle);

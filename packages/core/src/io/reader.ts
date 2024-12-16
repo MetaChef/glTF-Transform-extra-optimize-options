@@ -19,6 +19,16 @@ const DEFAULT_OPTIONS: ReaderOptions = {
 	dependencies: {},
 };
 
+const SUPPORTED_PREREAD_TYPES = new Set<PropertyType>([
+	PropertyType.BUFFER,
+	PropertyType.TEXTURE,
+	PropertyType.MATERIAL,
+	PropertyType.MESH,
+	PropertyType.PRIMITIVE,
+	PropertyType.NODE,
+	PropertyType.SCENE,
+]);
+
 /** @internal */
 export class GLTFReader {
 	public static read(jsonDoc: JSONDocument, _options: ReaderOptions = DEFAULT_OPTIONS): Document {
@@ -48,12 +58,26 @@ export class GLTFReader {
 
 		const extensionsUsed = json.extensionsUsed || [];
 		const extensionsRequired = json.extensionsRequired || [];
+
+		options.extensions.sort((a, b) => (a.EXTENSION_NAME > b.EXTENSION_NAME ? 1 : -1));
+
 		for (const Extension of options.extensions) {
 			if (extensionsUsed.includes(Extension.EXTENSION_NAME)) {
+				// Create extension.
 				const extension = document
 					.createExtension(Extension as unknown as new (doc: Document) => Extension)
 					.setRequired(extensionsRequired.includes(Extension.EXTENSION_NAME));
 
+				// Warn on unsupported preread hooks.
+				const unsupportedHooks = extension.prereadTypes.filter((type) => !SUPPORTED_PREREAD_TYPES.has(type));
+				if (unsupportedHooks.length) {
+					options.logger.warn(
+						`Preread hooks for some types (${unsupportedHooks.join()}), requested by extension ` +
+							`${extension.extensionName}, are unsupported. Please file an issue or a PR.`,
+					);
+				}
+
+				// Install dependencies.
 				for (const key of extension.readDependencies) {
 					extension.install(key, options.dependencies[key]);
 				}
@@ -164,6 +188,12 @@ export class GLTFReader {
 
 		/** Materials. */
 
+		document
+			.getRoot()
+			.listExtensionsUsed()
+			.filter((extension) => extension.prereadTypes.includes(PropertyType.MATERIAL))
+			.forEach((extension) => extension.preread(context, PropertyType.MATERIAL));
+
 		const materialDefs = json.materials || [];
 		context.materials = materialDefs.map((materialDef) => {
 			const material = document.createMaterial(materialDef.name);
@@ -251,6 +281,12 @@ export class GLTFReader {
 		});
 
 		/** Meshes. */
+
+		document
+			.getRoot()
+			.listExtensionsUsed()
+			.filter((extension) => extension.prereadTypes.includes(PropertyType.MESH))
+			.forEach((extension) => extension.preread(context, PropertyType.MESH));
 
 		const meshDefs = json.meshes || [];
 		document

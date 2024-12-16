@@ -10,9 +10,13 @@ This project consists of multiple NPM packages, managed in one repository with
 I recommend using VSCode for linting and type information, which becomes especially helpful
 when dealing with glTF schema objects.
 
-After cloning the repository, run:
+After cloning the repository, install project dependencies. If you haven't worked with Yarn v2+ before, you will need to enable [Corepack](https://yarnpkg.com/corepack) first.
 
 ```bash
+# First-time Yarn v2+ setup.
+corepack enable
+
+# Install dependencies.
 yarn install
 ```
 
@@ -20,20 +24,23 @@ The project relies on [Yarn workspaces](https://classic.yarnpkg.com/docs/workspa
 run:
 
 ```bash
-# Build on MacOS or Linux
+# Build
 yarn run dist
-
-# Build on Windows, see https://github.com/donmccurdy/glTF-Transform/pull/959
-yarn run dist --ignore "@gltf-transform/docs"
 
 # Test
 yarn test
 ```
 
+To run these or other commands on a subset of packages, use the `--ignore` flag.
+
+```bash
+yarn run dist --ignore "@gltf-transform/view"
+```
+
 To run an arbitrary command across all packages:
 
 ```bash
-lerna exec -- <command>
+yarn lerna exec -- <command>
 ```
 
 While working, use `yarn run watch` to watch and rebuild code after changes. To use a local
@@ -53,14 +60,35 @@ certain situations. To accomplish that, some platform-specific resources (like i
 [HTMLCanvasElement](https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API)) are passed into
 API functions by the user, rather than being created by the API directly.
 
-### Dependencies
+### Testing
 
-I recommend compiling with Node.js v12.x, which is the latest version with a prebuilt binary for
-`gl` as of April 2020.
+Unit tests use [Ava](https://github.com/avajs/ava).
+
+```bash
+# run all tests
+yarn test
+
+# run all tests, watching for source file changes to re-run
+yarn test --watch
+
+# run one test
+yarn test:filter packages/functions/test/palette.test.ts
+
+# run one test, watching for source file changes to re-run
+yarn test:filter packages/functions/test/palette.test.ts --watch
+```
+
+To use a debugger and step through tests using Chrome Developer Tools, see [_Debugging tests with Chrome DevTools_](https://github.com/avajs/ava/blob/main/docs/recipes/debugging-with-chrome-devtools.md). Add a `debugger;` statement to the body of the test, then run:
+
+```bash
+yarn test:debug packages/functions/test/palette.test.ts --break
+```
+
+### Dependencies
 
 Runtime dependencies should be installed only to the sub-package in which they are needed. Any
 devDependencies are shared across all packages, and should be installed in the project root. Pull
-requests should omit any changes to `dist/*` artifacts.
+requests should omit any changes to `dist/*` and `yarn.lock` artifacts.
 
 ### Documentation
 
@@ -75,6 +103,7 @@ Certain JSDoc tags have notable meanings within this project:
 - `@hidden` methods and classes are hidden from documentation, but still included in TypeScript
   definitions for the package. This code is not intended for wide use, but may be necessary for
   other packages in the glTF Transform monorepo.
+- `@experimental` tags indicate unstable APIs that do not yet follow SemVer conventions.
 
 ### Roadmap
 
@@ -89,13 +118,13 @@ Suggestions and PRs for new [Functions](/functions) are also generally welcome.
 All packages are published together. To create a standard release:
 
 ```bash
-lerna publish [ patch | minor | major ] --force-publish "*"
+yarn lerna publish [ patch | minor | major ] --force-publish "*"
 ```
 
 To create an alpha release:
 
 ```bash
-lerna publish prerelease --dist-tag next --force-publish "*"
+yarn lerna publish prerelease --dist-tag next --force-publish "*"
 ```
 
-If a release contains a new package, `-- --access public` must be appended. Lerna can be [finicky with 2FA OTPs](https://github.com/lerna/lerna/issues/1091).
+If a release contains a new package, `-- --access public` must be appended.

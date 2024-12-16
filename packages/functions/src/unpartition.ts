@@ -3,7 +3,6 @@ import { createTransform } from './utils.js';
 
 const NAME = 'unpartition';
 
-// eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface UnpartitionOptions {}
 const UNPARTITION_DEFAULTS: Required<UnpartitionOptions> = {};
 
@@ -25,9 +24,6 @@ const UNPARTITION_DEFAULTS: Required<UnpartitionOptions> = {};
  * @category Transforms
  */
 export function unpartition(_options: UnpartitionOptions = UNPARTITION_DEFAULTS): Transform {
-	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	const options = { ...UNPARTITION_DEFAULTS, ..._options } as Required<UnpartitionOptions>;
-
 	return createTransform(NAME, async (document: Document): Promise<void> => {
 		const logger = document.getLogger();
 

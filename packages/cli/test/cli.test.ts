@@ -64,9 +64,9 @@ test('draco', async (t) => {
 
 test('optimize', async (t) => {
 	await programReady;
+	await MeshoptDecoder.ready;
 	const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({
-		'draco3d.decoder': await draco3d.createDecoderModule(),
-		'draco3d.encoder': await draco3d.createEncoderModule(),
+		'meshopt.decoder': MeshoptDecoder,
 	});
 	const input = path.join(__dirname, 'in', 'chr_knight.glb');
 	const output = tmp.tmpNameSync({ postfix: '.glb' });
@@ -135,7 +135,7 @@ test('merge', async (t) => {
 		.setBuffer(bufB);
 	await io.write(inputB, documentB);
 
-	fs.writeFileSync(inputC, Buffer.from([1, 2, 3, 4, 5]));
+	fs.writeFileSync(inputC, new Uint8Array([1, 2, 3, 4, 5]));
 
 	await program
 		// https://github.com/mattallty/Caporal.js/issues/195

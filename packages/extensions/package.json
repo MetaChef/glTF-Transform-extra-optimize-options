@@ -1,6 +1,6 @@
 {
 	"name": "@gltf-transform/extensions",
-	"version": "3.6.0",
+	"version": "4.1.1",
 	"repository": "github:donmccurdy/glTF-Transform",
 	"homepage": "https://gltf-transform.dev/extensions.html",
 	"description": "Adds extension support to @gltf-transform/core",
@@ -10,23 +10,22 @@
 	"type": "module",
 	"sideEffects": false,
 	"exports": {
-		"types": "./dist/extensions.d.ts",
-		"require": "./dist/extensions.cjs",
-		"default": "./dist/extensions.modern.js"
+		"types": "./dist/index.d.ts",
+		"require": "./dist/index.cjs",
+		"default": "./dist/index.modern.js"
 	},
-	"types": "./dist/extensions.d.ts",
-	"main": "./dist/extensions.cjs",
-	"module": "./dist/extensions.modern.js",
-	"source": "./src/extensions.ts",
+	"types": "./dist/index.d.ts",
+	"main": "./dist/index.cjs",
+	"module": "./dist/index.modern.js",
+	"source": "./src/index.ts",
 	"browserslist": [
 		"defaults",
 		"not IE 11",
 		"node >= 14"
 	],
 	"scripts": {
-		"dist": "microbundle --format modern,cjs",
-		"watch": "microbundle watch --format modern,cjs",
-		"watch:debug": "microbundle watch --format modern,cjs --no-compress"
+		"dist": "microbundle --format modern,cjs --no-compress",
+		"watch": "microbundle watch --format modern,cjs --no-compress"
 	},
 	"keywords": [
 		"gltf",
@@ -36,14 +35,14 @@
 		"threejs"
 	],
 	"dependencies": {
-		"@gltf-transform/core": "^3.6.0",
-		"ktx-parse": "^0.6.0"
+		"@gltf-transform/core": "^4.1.1",
+		"ktx-parse": "^0.7.1"
 	},
 	"files": [
 		"dist/",
 		"src/",
 		"README.md",
-		"package.json"
+		"LICENSE.md"
 	],
-	"gitHead": "405359aa647acc95d47f1da9ac11cb83060ab482"
+	"gitHead": "895b70777fda68aa321358d17dab2105e8564d08"
 }

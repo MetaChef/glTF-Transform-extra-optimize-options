@@ -2,15 +2,7 @@ import { transformMat4 } from 'gl-matrix/vec3';
 import { PropertyType, bbox, mat4, vec3 } from '../constants.js';
 import type { Mesh, Node, Scene } from '../properties/index.js';
 
-/**
- * Computes bounding box (AABB) in world space for the given {@link Node} or {@link Scene}.
- *
- * Example:
- *
- * ```ts
- * const {min, max} = getBounds(scene);
- * ```
- */
+/** @hidden Implemented in /core for use by /extensions, publicly exported from /functions. */
 export function getBounds(node: Node | Scene): bbox {
 	const resultBounds = createBounds();
 	const parents = node.propertyType === PropertyType.NODE ? [node] : node.listChildren();
@@ -22,21 +14,17 @@ export function getBounds(node: Node | Scene): bbox {
 
 			// Compute mesh bounds and update result.
 			const meshBounds = getMeshBounds(mesh, node.getWorldMatrix());
-			expandBounds(meshBounds.min, resultBounds);
-			expandBounds(meshBounds.max, resultBounds);
+			if (meshBounds.min.every(isFinite) && meshBounds.max.every(isFinite)) {
+				expandBounds(meshBounds.min, resultBounds);
+				expandBounds(meshBounds.max, resultBounds);
+			}
 		});
 	}
 
 	return resultBounds;
 }
 
-/**
- * @deprecated Renamed to {@link getBounds}.
- * @hidden
- */
-export const bounds = getBounds;
-
-/** Computes mesh bounds in local space. */
+/** Computes mesh bounds in world space. */
 function getMeshBounds(mesh: Mesh, worldMatrix: mat4): bbox {
 	const meshBounds = createBounds();
 
@@ -44,12 +32,14 @@ function getMeshBounds(mesh: Mesh, worldMatrix: mat4): bbox {
 	// so we need to compute the world AABB vertex by vertex here.
 	for (const prim of mesh.listPrimitives()) {
 		const position = prim.getAttribute('POSITION');
+		const indices = prim.getIndices();
 		if (!position) continue;
 
 		let localPos: vec3 = [0, 0, 0];
 		let worldPos: vec3 = [0, 0, 0];
-		for (let i = 0; i < position.getCount(); i++) {
-			localPos = position.getElement(i, localPos) as vec3;
+		for (let i = 0, il = indices ? indices.getCount() : position.getCount(); i < il; i++) {
+			const index = indices ? indices.getScalar(i) : i;
+			localPos = position.getElement(index, localPos) as vec3;
 			worldPos = transformMat4(worldPos, localPos, worldMatrix) as vec3;
 			expandBounds(worldPos, meshBounds);
 		}

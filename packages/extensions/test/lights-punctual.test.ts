@@ -1,6 +1,7 @@
 import test from 'ava';
 import { Document, NodeIO } from '@gltf-transform/core';
 import { Light, KHRLightsPunctual } from '@gltf-transform/extensions';
+import { cloneDocument } from '@gltf-transform/functions';
 
 const WRITER_OPTIONS = { basename: 'extensionTest' };
 
@@ -69,7 +70,7 @@ test('copy', (t) => {
 		.setOuterConeAngle(0.75);
 	document.createNode().setExtension('KHR_lights_punctual', light);
 
-	const doc2 = document.clone();
+	const doc2 = cloneDocument(document);
 	const light2 = doc2.getRoot().listNodes()[0].getExtension<Light>('KHR_lights_punctual');
 	t.is(doc2.getRoot().listExtensionsUsed().length, 1, 'copy KHRLightsPunctual');
 	t.truthy(light2, 'copy light');
@@ -79,13 +80,6 @@ test('copy', (t) => {
 	t.is(light2.getRange(), 50, 'copy range');
 	t.is(light2.getInnerConeAngle(), 0.5, 'copy innerConeAngle');
 	t.is(light2.getOuterConeAngle(), 0.75, 'copy outerConeAngle');
-});
-
-test('hex', (t) => {
-	const document = new Document();
-	const lightsExtension = document.createExtension(KHRLightsPunctual);
-	const light = lightsExtension.createLight().setColorHex(0x111111);
-	t.is(light.getColorHex(), 0x111111, 'colorHex');
 });
 
 test('i/o', async (t) => {

@@ -1,7 +1,7 @@
 # @gltf-transform/cli
 
 [![Latest NPM release](https://img.shields.io/npm/v/@gltf-transform/cli.svg)](https://www.npmjs.com/package/@gltf-transform/cli)
-[![License](https://img.shields.io/npm/l/@gltf-transform/core.svg)](https://github.com/donmccurdy/glTF-Transform/blob/master/LICENSE)
+[![License](https://img.shields.io/npm/l/@gltf-transform/core.svg)](https://github.com/donmccurdy/glTF-Transform/blob/main/LICENSE.md)
 
 Part of the glTF Transform project.
 
@@ -11,7 +11,7 @@ Part of the glTF Transform project.
 
 ## Quickstart
 
-Install the CLI, supported in Node.js v14+.
+Install the CLI, supported in Node.js LTS versions.
 
 ```bash
 npm install --global @gltf-transform/cli
@@ -53,7 +53,7 @@ gltf-transform webp input.glb output.glb --slots "baseColor"
 # Compress textures with KTX2 + Basis Universal codecs, UASTC and ETC1S.
 gltf-transform uastc input.glb output1.glb \
     --slots "{normalTexture,occlusionTexture,metallicRoughnessTexture}" \
-    --level 4 --rdo 4 --zstd 18 --verbose
+    --level 4 --rdo --rdo-lambda 4 --zstd 18 --verbose
 gltf-transform etc1s output1.glb output2.glb --quality 255 --verbose
 ```
 

@@ -72,12 +72,12 @@ export class WriterContext {
 
 	private readonly _accessorUsageMap = new Map<Accessor, BufferViewUsage | string>();
 	public readonly accessorUsageGroupedByParent = new Set<string>(['ARRAY_BUFFER']);
-	public readonly accessorParents = new Map<Property, Set<Accessor>>();
+	public readonly accessorParents = new Map<Accessor, Property>();
 
 	constructor(
 		private readonly _doc: Document,
 		public readonly jsonDoc: JSONDocument,
-		public readonly options: Required<WriterOptions>
+		public readonly options: Required<WriterOptions>,
 	) {
 		const root = _doc.getRoot();
 		const numBuffers = root.listBuffers().length;
@@ -85,7 +85,7 @@ export class WriterContext {
 		this.bufferURIGenerator = new UniqueURIGenerator(numBuffers > 1, () => options.basename || 'buffer');
 		this.imageURIGenerator = new UniqueURIGenerator(
 			numImages > 1,
-			(texture) => getSlot(_doc, texture) || options.basename || 'texture'
+			(texture) => getSlot(_doc, texture) || options.basename || 'texture',
 		);
 		this.logger = _doc.getLogger();
 	}
@@ -158,7 +158,7 @@ export class WriterContext {
 			.some(
 				(edge) =>
 					(edge.getName() === 'attributes' && edge.getAttributes().key === 'POSITION') ||
-					edge.getName() === 'input'
+					edge.getName() === 'input',
 			);
 		if (needsBounds) {
 			accessorDef.max = accessor.getMax([]).map(Math.fround);
@@ -184,8 +184,32 @@ export class WriterContext {
 		} else {
 			const extension = ImageUtils.mimeTypeToExtension(texture.getMimeType());
 			imageDef.uri = this.imageURIGenerator.createURI(texture, extension);
-			this.jsonDoc.resources[imageDef.uri] = data;
+			this.assignResourceURI(imageDef.uri, data, false);
 		}
+	}
+
+	public assignResourceURI(uri: string, data: Uint8Array, throwOnConflict: boolean): void {
+		const resources = this.jsonDoc.resources;
+
+		// https://github.com/KhronosGroup/glTF/issues/2446
+		if (!(uri in resources)) {
+			resources[uri] = data;
+			return;
+		}
+
+		if (data === resources[uri]) {
+			this.logger.warn(`Duplicate resource URI, "${uri}".`);
+			return;
+		}
+
+		const conflictMessage = `Resource URI "${uri}" already assigned to different data.`;
+
+		if (!throwOnConflict) {
+			this.logger.warn(conflictMessage);
+			return;
+		}
+
+		throw new Error(conflictMessage);
 	}
 
 	/**
@@ -228,22 +252,15 @@ export class WriterContext {
 		this._accessorUsageMap.set(accessor, usage);
 		return this;
 	}
-
-	/** Lists accessors grouped by usage. Accessors with unspecified usage are not included. */
-	public listAccessorUsageGroups(): { [key: string]: Accessor[] } {
-		const result = {} as { [key: string]: Accessor[] };
-		for (const [accessor, usage] of Array.from(this._accessorUsageMap.entries())) {
-			result[usage] = result[usage] || [];
-			result[usage].push(accessor);
-		}
-		return result;
-	}
 }
 
 export class UniqueURIGenerator<T extends Texture | Buffer> {
 	private counter = {} as Record<string, number>;
 
-	constructor(private readonly multiple: boolean, private readonly basename: (t: T) => string) {}
+	constructor(
+		private readonly multiple: boolean,
+		private readonly basename: (t: T) => string,
+	) {}
 
 	public createURI(object: T, extension: string): string {
 		if (object.getURI()) {

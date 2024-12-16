@@ -2,7 +2,7 @@
 
 [![Latest NPM release](https://img.shields.io/npm/v/@gltf-transform/core.svg)](https://www.npmjs.com/package/@gltf-transform/core)
 [![npm bundle size](https://img.shields.io/bundlephobia/minzip/@gltf-transform/core)](https://bundlephobia.com/package/@gltf-transform/core)
-[![License](https://img.shields.io/badge/license-MIT-007ec6.svg)](https://github.com/donmccurdy/glTF-Transform/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-007ec6.svg)](https://github.com/donmccurdy/glTF-Transform/blob/main/LICENSE.md)
 [![Build Status](https://github.com/donmccurdy/glTF-Transform/workflows/build/badge.svg?branch=main&event=push)](https://github.com/donmccurdy/glTF-Transform/actions?query=workflow%3Abuild)
 [![Coverage](https://codecov.io/gh/donmccurdy/glTF-Transform/branch/main/graph/badge.svg?token=Z91ZYFEV09)](https://codecov.io/gh/donmccurdy/glTF-Transform)
 
@@ -116,7 +116,7 @@ To learn how glTF Transform works, and the architecture of the scripting API, st
 
 ## Command-line API
 
-Install the CLI, supported in Node.js v14+.
+Install the CLI, supported in Node.js LTS versions.
 
 ```bash
 npm install --global @gltf-transform/cli
@@ -158,7 +158,7 @@ gltf-transform webp input.glb output.glb --slots "baseColor"
 # Compress textures with KTX2 + Basis Universal codecs, UASTC and ETC1S.
 gltf-transform uastc input.glb output1.glb \
     --slots "{normalTexture,occlusionTexture,metallicRoughnessTexture}" \
-    --level 4 --rdo 4 --zstd 18 --verbose
+    --level 4 --rdo --rdo-lambda 4 --zstd 18 --verbose
 gltf-transform etc1s output1.glb output2.glb --quality 255 --verbose
 ```
 
@@ -170,4 +170,4 @@ See [*Credits*](https://gltf-transform.dev/credits).
 
 ## License
 
-Copyright 2023, MIT License.
+Copyright 2024, MIT License.

@@ -1,6 +1,6 @@
 import { Document, ILogger, PropertyType, Transform } from '@gltf-transform/core';
 import { prune } from './prune.js';
-import { createTransform } from './utils.js';
+import { assignDefaults, createTransform } from './utils.js';
 
 const NAME = 'partition';
 
@@ -32,7 +32,7 @@ const PARTITION_DEFAULTS: Required<PartitionOptions> = {
  * @category Transforms
  */
 export function partition(_options: PartitionOptions = PARTITION_DEFAULTS): Transform {
-	const options = { ...PARTITION_DEFAULTS, ..._options } as Required<PartitionOptions>;
+	const options = assignDefaults(PARTITION_DEFAULTS, _options);
 
 	return createTransform(NAME, async (doc: Document): Promise<void> => {
 		const logger = doc.getLogger();
@@ -50,12 +50,12 @@ export function partition(_options: PartitionOptions = PARTITION_DEFAULTS): Tran
 	});
 }
 
-function partitionMeshes(doc: Document, logger: ILogger, options: PartitionOptions): void {
+function partitionMeshes(doc: Document, logger: ILogger, options: Required<PartitionOptions>): void {
 	const existingURIs = new Set<string>(
 		doc
 			.getRoot()
 			.listBuffers()
-			.map((b) => b.getURI())
+			.map((b) => b.getURI()),
 	);
 
 	doc.getRoot()
@@ -83,12 +83,12 @@ function partitionMeshes(doc: Document, logger: ILogger, options: PartitionOptio
 		});
 }
 
-function partitionAnimations(doc: Document, logger: ILogger, options: PartitionOptions): void {
+function partitionAnimations(doc: Document, logger: ILogger, options: Required<PartitionOptions>): void {
 	const existingURIs = new Set<string>(
 		doc
 			.getRoot()
 			.listBuffers()
-			.map((b) => b.getURI())
+			.map((b) => b.getURI()),
 	);
 
 	doc.getRoot()
@@ -114,9 +114,13 @@ function partitionAnimations(doc: Document, logger: ILogger, options: PartitionO
 		});
 }
 
+const SANITIZE_BASENAME_RE = /[^\w0–9-]+/g;
+
 function createBufferURI(basename: string, existing: Set<string>): string {
+	basename = basename.replace(SANITIZE_BASENAME_RE, '');
 	let uri = `${basename}.bin`;
 	let i = 1;
 	while (existing.has(uri)) uri = `${basename}_${i++}.bin`;
+	existing.add(uri);
 	return uri;
 }

@@ -28,15 +28,14 @@ import { HTTPUtils } from '../utils/index.js';
  * const glb = await io.writeBinary(document); // Document → Uint8Array
  * ```
  *
- * By default, NodeIO can only read/write paths on disk. To enable HTTP requests, provide a Fetch
- * API implementation (such as [`node-fetch`](https://www.npmjs.com/package/node-fetch)) and enable
- * {@link NodeIO.setAllowHTTP setAllowHTTP}. HTTP requests may optionally be configured with
+ * By default, NodeIO can only read/write paths on disk. To enable network requests, provide a Fetch
+ * API implementation (global [`fetch()`](https://nodejs.org/api/globals.html#fetch) is stable in
+ * Node.js v21+, or [`node-fetch`](https://www.npmjs.com/package/node-fetch) may be installed) and enable
+ * {@link NodeIO.setAllowNetwork setAllowNetwork}. Network requests may optionally be configured with
  * [RequestInit](https://developer.mozilla.org/en-US/docs/Web/API/fetch#parameters) parameters.
  *
  * ```typescript
- * import fetch from 'node-fetch';
- *
- * const io = new NodeIO(fetch, {headers: {...}}).setAllowHTTP(true);
+ * const io = new NodeIO(fetch, {headers: {...}}).setAllowNetwork(true);
  *
  * const document = await io.read('https://example.com/path/to/model.glb');
  * ```
@@ -55,7 +54,7 @@ export class NodeIO extends PlatformIO {
 	/**
 	 * Constructs a new NodeIO service. Instances are reusable. By default, only NodeIO can only
 	 * read/write paths on disk. To enable HTTP requests, provide a Fetch API implementation and
-	 * enable {@link NodeIO.setAllowHTTP setAllowHTTP}.
+	 * enable {@link NodeIO.setAllowNetwork setAllowNetwork}.
 	 *
 	 * @param fetch Implementation of Fetch API.
 	 * @param fetchConfig Configuration object for Fetch API.
@@ -75,7 +74,7 @@ export class NodeIO extends PlatformIO {
 		});
 	}
 
-	public setAllowHTTP(allow: boolean): this {
+	public setAllowNetwork(allow: boolean): this {
 		if (allow && !this._fetch) {
 			throw new Error('NodeIO requires a Fetch API implementation for HTTP requests.');
 		}
@@ -149,29 +148,51 @@ export class NodeIO extends PlatformIO {
 		});
 		const { _fs: fs, _path: path } = this;
 		const dir = path.dirname(uri);
+
+		// write json
 		const jsonContent = JSON.stringify(json, null, 2);
-		this.lastWriteBytes += jsonContent.length;
 		await fs.writeFile(uri, jsonContent);
-		const pending = Object.keys(resources).map(async (resourceURI) => {
-			if (HTTPUtils.isAbsoluteURL(resourceURI)) {
-				if (HTTPUtils.extension(resourceURI) === 'bin') {
-					throw new Error(`Cannot write buffer to path "${resourceURI}".`);
-				}
-				return;
-			}
-			const resource = Buffer.from(resources[resourceURI]);
-			const resourcePath = path.join(dir, resourceURI);
-			await fs.mkdir(path.dirname(resourcePath), { recursive: true });
-			await fs.writeFile(resourcePath, resource);
-			this.lastWriteBytes += resource.byteLength;
-		});
-		await Promise.all(pending);
+		this.lastWriteBytes += jsonContent.length;
+
+		// write resources
+		for (const batch of listBatches(Object.keys(resources), 10)) {
+			await Promise.all(
+				batch.map(async (resourceURI) => {
+					if (HTTPUtils.isAbsoluteURL(resourceURI)) {
+						if (HTTPUtils.extension(resourceURI) === 'bin') {
+							throw new Error(`Cannot write buffer to path "${resourceURI}".`);
+						}
+						return;
+					}
+
+					const resourcePath = path.join(dir, decodeURIComponent(resourceURI));
+					await fs.mkdir(path.dirname(resourcePath), { recursive: true });
+					await fs.writeFile(resourcePath, resources[resourceURI]);
+					this.lastWriteBytes += resources[resourceURI].byteLength;
+				}),
+			);
+		}
 	}
 
 	/** @internal */
 	private async _writeGLB(uri: string, doc: Document): Promise<void> {
-		const buffer = Buffer.from(await this.writeBinary(doc));
+		const buffer = await this.writeBinary(doc);
 		await this._fs.writeFile(uri, buffer);
 		this.lastWriteBytes = buffer.byteLength;
 	}
+}
+
+/** Divides a flat input array into batches of size `batchSize`. */
+function listBatches<T>(array: T[], batchSize: number): T[][] {
+	const batches: T[][] = [];
+
+	for (let i = 0, il = array.length; i < il; i += batchSize) {
+		const batch: T[] = [];
+		for (let j = 0; j < batchSize && i + j < il; j++) {
+			batch.push(array[i + j]);
+		}
+		batches.push(batch);
+	}
+
+	return batches;
 }

@@ -9,9 +9,8 @@ import {
 } from '../constants.js';
 import type { Document } from '../document.js';
 import type { Extension } from '../extension.js';
-import type { GraphEdge } from 'property-graph';
 import type { JSONDocument } from '../json-document.js';
-import { Accessor, AnimationSampler, Camera, Material, Property } from '../properties/index.js';
+import { Accessor, AnimationSampler, Camera, Material } from '../properties/index.js';
 import type { GLTF } from '../types/gltf.js';
 import { BufferUtils, Logger, MathUtils } from '../utils/index.js';
 import { WriterContext } from './writer-context.js';
@@ -28,12 +27,20 @@ export interface WriterOptions {
 	extensions?: (typeof Extension)[];
 }
 
+const SUPPORTED_PREWRITE_TYPES = new Set<PropertyType>([
+	PropertyType.ACCESSOR,
+	PropertyType.BUFFER,
+	PropertyType.MATERIAL,
+	PropertyType.MESH,
+]);
+
 /**
  * @internal
  * @hidden
  */
 export class GLTFWriter {
 	public static write(doc: Document, options: Required<WriterOptions>): JSONDocument {
+		const graph = doc.getGraph();
 		const root = doc.getRoot();
 		const json = {
 			asset: { generator: `glTF-Transform ${VERSION}`, ...root.getAsset() },
@@ -53,17 +60,28 @@ export class GLTFWriter {
 		const extensionsUsed = doc
 			.getRoot()
 			.listExtensionsUsed()
-			.filter((ext) => extensionsRegistered.has(ext.extensionName));
+			.filter((ext) => extensionsRegistered.has(ext.extensionName))
+			.sort((a, b) => (a.extensionName > b.extensionName ? 1 : -1));
 		const extensionsRequired = doc
 			.getRoot()
 			.listExtensionsRequired()
-			.filter((ext) => extensionsRegistered.has(ext.extensionName));
-
+			.filter((ext) => extensionsRegistered.has(ext.extensionName))
+			.sort((a, b) => (a.extensionName > b.extensionName ? 1 : -1));
 		if (extensionsUsed.length < doc.getRoot().listExtensionsUsed().length) {
 			logger.warn('Some extensions were not registered for I/O, and will not be written.');
 		}
 
 		for (const extension of extensionsUsed) {
+			// Warn on unsupported prewrite hooks.
+			const unsupportedHooks = extension.prewriteTypes.filter((type) => !SUPPORTED_PREWRITE_TYPES.has(type));
+			if (unsupportedHooks.length) {
+				logger.warn(
+					`Prewrite hooks for some types (${unsupportedHooks.join()}), requested by extension ` +
+						`${extension.extensionName}, are unsupported. Please file an issue or a PR.`,
+				);
+			}
+
+			// Install dependencies.
 			for (const key of extension.writeDependencies) {
 				extension.install(key, options.dependencies[key]);
 			}
@@ -89,7 +107,7 @@ export class GLTFWriter {
 			accessors: Accessor[],
 			bufferIndex: number,
 			bufferByteOffset: number,
-			bufferViewTarget?: number
+			bufferViewTarget?: number,
 		): BufferViewResult {
 			const buffers: Uint8Array[] = [];
 			let byteLength = 0;
@@ -137,7 +155,7 @@ export class GLTFWriter {
 		function interleaveAccessors(
 			accessors: Accessor[],
 			bufferIndex: number,
-			bufferByteOffset: number
+			bufferByteOffset: number,
 		): BufferViewResult {
 			const vertexCount = accessors[0].getCount();
 			let byteStride = 0;
@@ -223,7 +241,7 @@ export class GLTFWriter {
 		function concatSparseAccessors(
 			accessors: Accessor[],
 			bufferIndex: number,
-			bufferByteOffset: number
+			bufferByteOffset: number,
 		): BufferViewResult {
 			const buffers: Uint8Array[] = [];
 			let byteLength = 0;
@@ -238,6 +256,7 @@ export class GLTFWriter {
 			}
 			const sparseData = new Map<Accessor, SparseData>();
 			let maxIndex = -Infinity;
+			let needSparseWarning = false;
 
 			// (1) Write accessor definitions, gathering indices and values.
 
@@ -267,10 +286,8 @@ export class GLTFWriter {
 
 				if (count === 0) continue;
 
-				if (count > accessor.getCount() / 3) {
-					// Too late to write non-sparse values in the proper buffer views here.
-					const pct = ((100 * indices.length) / accessor.getCount()).toFixed(1);
-					logger.warn(`Sparse accessor with many non-zero elements (${pct}%) may increase file size.`);
+				if (count > accessor.getCount() / 2) {
+					needSparseWarning = true;
 				}
 
 				const ValueArray = ComponentTypeToTypedArray[accessor.getComponentType()];
@@ -282,6 +299,10 @@ export class GLTFWriter {
 
 			if (!Number.isFinite(maxIndex)) {
 				return { buffers, byteLength };
+			}
+
+			if (needSparseWarning) {
+				logger.warn(`Some sparse accessors have >50% non-zero elements, which may increase file size.`);
 			}
 
 			// (3) Write index buffer view.
@@ -353,23 +374,6 @@ export class GLTFWriter {
 			return { buffers, byteLength };
 		}
 
-		/* Data use pre-processing. */
-
-		const accessorRefs = new Map<Accessor, GraphEdge<Property, Accessor>[]>();
-
-		// Gather all accessors, creating a map to look up their uses.
-		for (const ref of doc.getGraph().listEdges()) {
-			if (ref.getParent() === root) continue;
-
-			const child = ref.getChild();
-
-			if (child instanceof Accessor) {
-				const uses = accessorRefs.get(child) || [];
-				uses.push(ref as GraphEdge<Property, Accessor>);
-				accessorRefs.set(child, uses);
-			}
-		}
-
 		json.accessors = [];
 		json.bufferViews = [];
 
@@ -416,17 +420,14 @@ export class GLTFWriter {
 			if (context.accessorIndexMap.has(accessor)) return;
 
 			// Assign usage for core accessor usage types (explicit targets and implicit usage).
-			const accessorEdges = accessorRefs.get(accessor) || [];
 			const usage = context.getAccessorUsage(accessor);
 			context.addAccessorToUsageGroup(accessor, usage);
 
 			// For accessor usage that requires grouping by parent (vertex and instance
 			// attributes) organize buffer views accordingly.
 			if (groupByParent.has(usage)) {
-				const parent = accessorEdges[0].getParent();
-				const parentAccessors = accessorParents.get(parent) || new Set<Accessor>();
-				parentAccessors.add(accessor);
-				accessorParents.set(parent, parentAccessors);
+				const parent = graph.listParents(accessor).find((parent) => parent.propertyType !== PropertyType.ROOT)!;
+				accessorParents.set(accessor, parent);
 			}
 		});
 
@@ -436,9 +437,11 @@ export class GLTFWriter {
 			.filter((extension) => extension.prewriteTypes.includes(PropertyType.BUFFER))
 			.forEach((extension) => extension.prewrite(context, PropertyType.BUFFER));
 
-		const hasBinaryResources =
-			root.listAccessors().length > 0 || root.listTextures().length > 0 || context.otherBufferViews.size > 0;
-		if (hasBinaryResources && root.listBuffers().length === 0) {
+		const needsBuffer =
+			root.listAccessors().length > 0 ||
+			context.otherBufferViews.size > 0 ||
+			(root.listTextures().length > 0 && options.format === Format.GLB);
+		if (needsBuffer && root.listBuffers().length === 0) {
 			throw new Error('Buffer required for Document resources, but none was found.');
 		}
 
@@ -446,12 +449,28 @@ export class GLTFWriter {
 		root.listBuffers().forEach((buffer, index) => {
 			const bufferDef = context.createPropertyDef(buffer) as GLTF.IBuffer;
 			const groupByParent = context.accessorUsageGroupedByParent;
-			const accessorParents = context.accessorParents;
 
-			const bufferAccessors = buffer
-				.listParents()
-				.filter((property) => property instanceof Accessor) as Accessor[];
-			const bufferAccessorsSet = new Set(bufferAccessors);
+			const accessors = buffer.listParents().filter((property) => property instanceof Accessor) as Accessor[];
+			const uniqueParents = new Set(accessors.map((accessor) => context.accessorParents.get(accessor)));
+			const parentToIndex = new Map(Array.from(uniqueParents).map((parent, index) => [parent, index]));
+
+			// Group by usage and (first) parent, including vertex and instance attributes.
+			type AccessorGroup = { usage: string; accessors: Accessor[] };
+			const accessorGroups: Record<string, AccessorGroup> = {};
+			for (const accessor of accessors) {
+				// Skip if already written by an extension.
+				if (context.accessorIndexMap.has(accessor)) continue;
+
+				const usage = context.getAccessorUsage(accessor);
+				let key = usage;
+				if (groupByParent.has(usage)) {
+					const parent = context.accessorParents.get(accessor);
+					key += `:${parentToIndex.get(parent)}`;
+				}
+
+				accessorGroups[key] ||= { usage, accessors: [] };
+				accessorGroups[key].accessors.push(accessor);
+			}
 
 			// Write accessor groups to buffer views.
 
@@ -459,58 +478,47 @@ export class GLTFWriter {
 			const bufferIndex = json.buffers!.length;
 			let bufferByteLength = 0;
 
-			const usageGroups = context.listAccessorUsageGroups();
-
-			for (const usage in usageGroups) {
-				if (groupByParent.has(usage)) {
-					// Accessors grouped by (first) parent, including vertex and instance attributes.
-					for (const parentAccessors of Array.from(accessorParents.values())) {
-						const accessors = Array.from(parentAccessors)
-							.filter((a) => bufferAccessorsSet.has(a))
-							.filter((a) => context.getAccessorUsage(a) === usage);
-						if (!accessors.length) continue;
-
-						if (
-							usage !== BufferViewUsage.ARRAY_BUFFER ||
-							options.vertexLayout === VertexLayout.INTERLEAVED
-						) {
-							// Case 1: Non-vertex data OR interleaved vertex data.
-
-							// Instanced data is not interleaved, see:
-							// https://github.com/KhronosGroup/glTF/pull/1888
-							const result =
-								usage === BufferViewUsage.ARRAY_BUFFER
-									? interleaveAccessors(accessors, bufferIndex, bufferByteLength)
-									: concatAccessors(accessors, bufferIndex, bufferByteLength);
-							bufferByteLength += result.byteLength;
-							buffers.push(...result.buffers);
-						} else {
-							// Case 2: Non-interleaved vertex data.
-
-							for (const accessor of accessors) {
-								// We 'interleave' a single accessor because the method pads to
-								// 4-byte boundaries, which concatAccessors() does not.
-								const result = interleaveAccessors([accessor], bufferIndex, bufferByteLength);
-								bufferByteLength += result.byteLength;
-								buffers.push(...result.buffers);
-							}
+			for (const { usage, accessors: groupAccessors } of Object.values(accessorGroups)) {
+				if (usage === BufferViewUsage.ARRAY_BUFFER && options.vertexLayout === VertexLayout.INTERLEAVED) {
+					// (1) Interleaved vertex attributes.
+					const result = interleaveAccessors(groupAccessors, bufferIndex, bufferByteLength);
+					bufferByteLength += result.byteLength;
+					for (const buffer of result.buffers) {
+						buffers.push(buffer);
+					}
+				} else if (usage === BufferViewUsage.ARRAY_BUFFER) {
+					// (2) Non-interleaved vertex attributes.
+					for (const accessor of groupAccessors) {
+						// We 'interleave' a single accessor because the method pads to
+						// 4-byte boundaries, which concatAccessors() does not.
+						const result = interleaveAccessors([accessor], bufferIndex, bufferByteLength);
+						bufferByteLength += result.byteLength;
+						for (const buffer of result.buffers) {
+							buffers.push(buffer);
 						}
 					}
-				} else {
-					// Accessors concatenated end-to-end, including indices, IBMs, and other data.
-					const accessors = usageGroups[usage].filter((a) => bufferAccessorsSet.has(a));
-					if (!accessors.length) continue;
-
-					const target =
-						usage === BufferViewUsage.ELEMENT_ARRAY_BUFFER
-							? WriterContext.BufferViewTarget.ELEMENT_ARRAY_BUFFER
-							: undefined;
-					const result =
-						usage === BufferViewUsage.SPARSE
-							? concatSparseAccessors(accessors, bufferIndex, bufferByteLength)
-							: concatAccessors(accessors, bufferIndex, bufferByteLength, target);
+				} else if (usage === BufferViewUsage.SPARSE) {
+					// (3) Sparse accessors.
+					const result = concatSparseAccessors(groupAccessors, bufferIndex, bufferByteLength);
 					bufferByteLength += result.byteLength;
-					buffers.push(...result.buffers);
+					for (const buffer of result.buffers) {
+						buffers.push(buffer);
+					}
+				} else if (usage === BufferViewUsage.ELEMENT_ARRAY_BUFFER) {
+					// (4) Indices.
+					const target = WriterContext.BufferViewTarget.ELEMENT_ARRAY_BUFFER;
+					const result = concatAccessors(groupAccessors, bufferIndex, bufferByteLength, target);
+					bufferByteLength += result.byteLength;
+					for (const buffer of result.buffers) {
+						buffers.push(buffer);
+					}
+				} else {
+					// (5) Other.
+					const result = concatAccessors(groupAccessors, bufferIndex, bufferByteLength);
+					bufferByteLength += result.byteLength;
+					for (const buffer of result.buffers) {
+						buffers.push(buffer);
+					}
 				}
 			}
 
@@ -556,7 +564,7 @@ export class GLTFWriter {
 
 				// Write buffer views to buffer.
 				bufferDef.byteLength = bufferByteLength;
-				jsonDoc.resources[uri] = BufferUtils.concat(buffers);
+				context.assignResourceURI(uri, BufferUtils.concat(buffers), true);
 			}
 
 			json.buffers!.push(bufferDef);
@@ -568,6 +576,10 @@ export class GLTFWriter {
 		}
 
 		/* Materials. */
+
+		extensionsUsed
+			.filter((extension) => extension.prewriteTypes.includes(PropertyType.MATERIAL))
+			.forEach((extension) => extension.prewrite(context, PropertyType.MATERIAL));
 
 		json.materials = root.listMaterials().map((material, index) => {
 			const materialDef = context.createPropertyDef(material) as GLTF.IMaterial;
@@ -617,7 +629,7 @@ export class GLTFWriter {
 				const textureInfo = material.getNormalTextureInfo()!;
 				const textureInfoDef = context.createTextureInfoDef(
 					texture,
-					textureInfo
+					textureInfo,
 				) as GLTF.IMaterialNormalTextureInfo;
 				if (material.getNormalScale() !== 1) {
 					textureInfoDef.scale = material.getNormalScale();
@@ -630,7 +642,7 @@ export class GLTFWriter {
 				const textureInfo = material.getOcclusionTextureInfo()!;
 				const textureInfoDef = context.createTextureInfoDef(
 					texture,
-					textureInfo
+					textureInfo,
 				) as GLTF.IMaterialOcclusionTextureInfo;
 				if (material.getOcclusionStrength() !== 1) {
 					textureInfoDef.strength = material.getOcclusionStrength();
@@ -643,7 +655,7 @@ export class GLTFWriter {
 				const textureInfo = material.getMetallicRoughnessTextureInfo()!;
 				materialDef.pbrMetallicRoughness.metallicRoughnessTexture = context.createTextureInfoDef(
 					texture,
-					textureInfo
+					textureInfo,
 				);
 			}
 
@@ -652,6 +664,10 @@ export class GLTFWriter {
 		});
 
 		/* Meshes. */
+
+		extensionsUsed
+			.filter((extension) => extension.prewriteTypes.includes(PropertyType.MESH))
+			.forEach((extension) => extension.prewrite(context, PropertyType.MESH));
 
 		json.meshes = root.listMeshes().map((mesh, index) => {
 			const meshDef = context.createPropertyDef(mesh) as GLTF.IMesh;
@@ -679,7 +695,7 @@ export class GLTFWriter {
 
 				for (const semantic of primitive.listSemantics()) {
 					primitiveDef.attributes[semantic] = context.accessorIndexMap.get(
-						primitive.getAttribute(semantic)!
+						primitive.getAttribute(semantic)!,
 					)!;
 				}
 

@@ -1,6 +1,7 @@
 import test from 'ava';
 import { Document, NodeIO } from '@gltf-transform/core';
 import { KHRMaterialsSheen, Sheen } from '@gltf-transform/extensions';
+import { cloneDocument } from '@gltf-transform/functions';
 
 const WRITER_OPTIONS = { basename: 'extensionTest' };
 
@@ -33,7 +34,7 @@ test('basic', async (t) => {
 				sheenColorTexture: { index: 0 },
 			},
 		},
-		'writes sheen extension'
+		'writes sheen extension',
 	);
 	t.deepEqual(jsonDoc.json.extensionsUsed, [KHRMaterialsSheen.EXTENSION_NAME], 'writes extensionsUsed');
 
@@ -57,17 +58,10 @@ test('copy', (t) => {
 		.setSheenColorTexture(doc.createTexture('sheen'));
 	doc.createMaterial().setExtension('KHR_materials_sheen', sheen);
 
-	const doc2 = doc.clone();
+	const doc2 = cloneDocument(doc);
 	const sheen2 = doc2.getRoot().listMaterials()[0].getExtension<Sheen>('KHR_materials_sheen');
 	t.is(doc2.getRoot().listExtensionsUsed().length, 1, 'copy KHRMaterialsSheen');
 	t.truthy(sheen2, 'copy Sheen');
 	t.deepEqual(sheen2.getSheenColorFactor(), [0.9, 0.5, 0.8], 'copy sheenColorFactor');
 	t.is(sheen2.getSheenColorTexture().getName(), 'sheen', 'copy sheenColorTexture');
-});
-
-test('hex', (t) => {
-	const doc = new Document();
-	const sheenExtension = doc.createExtension(KHRMaterialsSheen);
-	const sheen = sheenExtension.createSheen().setSheenColorHex(0x252525);
-	t.is(sheen.getSheenColorHex(), 0x252525, 'sheenColorHex');
 });

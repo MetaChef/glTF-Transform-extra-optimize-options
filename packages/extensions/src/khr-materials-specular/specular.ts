@@ -1,5 +1,4 @@
 import {
-	ColorUtils,
 	ExtensionProperty,
 	IProperty,
 	Nullable,
@@ -70,17 +69,6 @@ export class Specular extends ExtensionProperty<ISpecular> {
 	/** Specular color; Linear-sRGB components. See {@link Specular.getSpecularTexture getSpecularTexture}. */
 	public setSpecularColorFactor(factor: vec3): this {
 		return this.set('specularColorFactor', factor);
-	}
-
-	/** Specular color; sRGB hexadecimal color. See {@link Specular.getSpecularTexture getSpecularTexture} */
-	public getSpecularColorHex(): number {
-		return ColorUtils.factorToHex(this.getSpecularColorFactor());
-	}
-
-	/** Specular color; sRGB hexadecimal color. See {@link Specular.getSpecularTexture getSpecularTexture} */
-	public setSpecularColorHex(hex: number): this {
-		const factor = this.getSpecularColorFactor().slice() as vec3;
-		return this.set('specularColorFactor', ColorUtils.hexToFactor(hex, factor));
 	}
 
 	/**

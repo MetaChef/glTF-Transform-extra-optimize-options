@@ -3,6 +3,7 @@ import { getPixels, savePixels } from 'ndarray-pixels';
 import {
 	Accessor,
 	Document,
+	GLTF,
 	Primitive,
 	Property,
 	PropertyType,
@@ -12,8 +13,10 @@ import {
 	vec2,
 } from '@gltf-transform/core';
 
+const { POINTS, LINES, LINE_STRIP, LINE_LOOP, TRIANGLES, TRIANGLE_STRIP, TRIANGLE_FAN } = Primitive.Mode;
+
 /**
- * Prepares a function used in an {@link Document.transform} pipeline. Use of this wrapper is
+ * Prepares a function used in an {@link Document#transform} pipeline. Use of this wrapper is
  * optional, and plain functions may be used in transform pipelines just as well. The wrapper is
  * used internally so earlier pipeline stages can detect and optimize based on later stages.
  * @hidden
@@ -29,6 +32,24 @@ export function isTransformPending(context: TransformContext | undefined, initia
 	const initialIndex = context.stack.lastIndexOf(initial);
 	const pendingIndex = context.stack.lastIndexOf(pending);
 	return initialIndex < pendingIndex;
+}
+
+/**
+ * Performs a shallow merge on an 'options' object and a 'defaults' object.
+ * Equivalent to `{...defaults, ...options}` _except_ that `undefined` values
+ * in the 'options' object are ignored.
+ *
+ * @hidden
+ */
+export function assignDefaults<Defaults, Options>(defaults: Defaults, options: Options): Defaults & Options {
+	const result = { ...defaults } as Defaults & Partial<Options>;
+	for (const key in options) {
+		if (options[key] !== undefined) {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			result[key] = options[key] as any;
+		}
+	}
+	return result as Defaults & Options;
 }
 
 /**
@@ -65,18 +86,18 @@ export function getGLPrimitiveCount(prim: Primitive): number {
 	// Reference: https://www.khronos.org/opengl/wiki/Primitive
 	switch (prim.getMode()) {
 		case Primitive.Mode.POINTS:
-			return position.getCount();
+			return indices ? indices.getCount() : position.getCount();
 		case Primitive.Mode.LINES:
 			return indices ? indices.getCount() / 2 : position.getCount() / 2;
 		case Primitive.Mode.LINE_LOOP:
-			return position.getCount();
+			return indices ? indices.getCount() : position.getCount();
 		case Primitive.Mode.LINE_STRIP:
-			return position.getCount() - 1;
+			return indices ? indices.getCount() - 1 : position.getCount() - 1;
 		case Primitive.Mode.TRIANGLES:
 			return indices ? indices.getCount() / 3 : position.getCount() / 3;
 		case Primitive.Mode.TRIANGLE_STRIP:
 		case Primitive.Mode.TRIANGLE_FAN:
-			return position.getCount() - 2;
+			return indices ? indices.getCount() - 2 : position.getCount() - 2;
 		default:
 			throw new Error('Unexpected mode: ' + prim.getMode());
 	}
@@ -121,9 +142,11 @@ export function formatBytes(bytes: number, decimals = 2): string {
 	return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
+const _longFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+
 /** @hidden */
 export function formatLong(x: number): string {
-	return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+	return _longFormatter.format(x);
 }
 
 /** @hidden */
@@ -177,32 +200,38 @@ export function shallowEqualsArray(a: ArrayLike<unknown> | null, b: ArrayLike<un
 	return true;
 }
 
-/** @hidden */
-export function remapAttribute(attribute: Accessor, remap: Uint32Array, dstCount: number) {
-	const elementSize = attribute.getElementSize();
-	const srcCount = attribute.getCount();
-	const srcArray = attribute.getArray()!;
-	const dstArray = srcArray.slice(0, dstCount * elementSize);
-
-	for (let i = 0; i < srcCount; i++) {
-		for (let j = 0; j < elementSize; j++) {
-			dstArray[remap[i] * elementSize + j] = srcArray[i * elementSize + j];
-		}
-	}
-
-	attribute.setArray(dstArray);
+/** Clones an {@link Accessor} without creating a copy of its underlying TypedArray data. */
+export function shallowCloneAccessor(document: Document, accessor: Accessor): Accessor {
+	return document
+		.createAccessor(accessor.getName())
+		.setArray(accessor.getArray())
+		.setType(accessor.getType())
+		.setBuffer(accessor.getBuffer())
+		.setNormalized(accessor.getNormalized())
+		.setSparse(accessor.getSparse());
 }
 
 /** @hidden */
 export function createIndices(count: number, maxIndex = count): Uint16Array | Uint32Array {
-	const array = maxIndex <= 65534 ? new Uint16Array(count) : new Uint32Array(count);
+	const array = createIndicesEmpty(count, maxIndex);
 	for (let i = 0; i < array.length; i++) array[i] = i;
 	return array;
 }
 
 /** @hidden */
+export function createIndicesEmpty(count: number, maxIndex = count): Uint16Array | Uint32Array {
+	return maxIndex <= 65534 ? new Uint16Array(count) : new Uint32Array(count);
+}
+
+/** @hidden */
 export function isUsed(prop: Property): boolean {
 	return prop.listParents().some((parent) => parent.propertyType !== PropertyType.ROOT);
+}
+
+/** @hidden */
+export function isEmptyObject(object: Record<string, unknown>): boolean {
+	for (const key in object) return false;
+	return true;
 }
 
 /**
@@ -215,7 +244,7 @@ export function createPrimGroupKey(prim: Primitive): string {
 	const document = Document.fromGraph(prim.getGraph())!;
 	const material = prim.getMaterial();
 	const materialIndex = document.getRoot().listMaterials().indexOf(material!);
-	const mode = prim.getMode();
+	const mode = BASIC_MODE_MAPPING[prim.getMode()];
 	const indices = !!prim.getIndices();
 
 	const attributes = prim
@@ -248,7 +277,11 @@ export function createPrimGroupKey(prim: Primitive): string {
 	return `${materialIndex}|${mode}|${indices}|${attributes}|${targets}`;
 }
 
-/** @hidden */
+/**
+ * Scales `size` NxN dimensions to fit within `limit` NxN dimensions, without
+ * changing aspect ratio. If `size` <= `limit` in all dimensions, returns `size`.
+ * @hidden
+ */
 export function fitWithin(size: vec2, limit: vec2): vec2 {
 	const [maxWidth, maxHeight] = limit;
 	const [srcWidth, srcHeight] = size;
@@ -270,3 +303,62 @@ export function fitWithin(size: vec2, limit: vec2): vec2 {
 
 	return [dstWidth, dstHeight];
 }
+
+type ResizePreset = 'nearest-pot' | 'ceil-pot' | 'floor-pot';
+
+/**
+ * Scales `size` NxN dimensions to the specified power of two.
+ * @hidden
+ */
+export function fitPowerOfTwo(size: vec2, method: ResizePreset): vec2 {
+	if (isPowerOfTwo(size[0]) && isPowerOfTwo(size[1])) {
+		return size;
+	}
+
+	switch (method) {
+		case 'nearest-pot':
+			return size.map(nearestPowerOfTwo) as vec2;
+		case 'ceil-pot':
+			return size.map(ceilPowerOfTwo) as vec2;
+		case 'floor-pot':
+			return size.map(floorPowerOfTwo) as vec2;
+	}
+}
+
+function isPowerOfTwo(value: number): boolean {
+	if (value <= 2) return true;
+	return (value & (value - 1)) === 0 && value !== 0;
+}
+
+function nearestPowerOfTwo(value: number): number {
+	if (value <= 4) return 4;
+
+	const lo = floorPowerOfTwo(value);
+	const hi = ceilPowerOfTwo(value);
+
+	if (hi - value > value - lo) return lo;
+	return hi;
+}
+
+export function floorPowerOfTwo(value: number): number {
+	return Math.pow(2, Math.floor(Math.log(value) / Math.LN2));
+}
+
+export function ceilPowerOfTwo(value: number): number {
+	return Math.pow(2, Math.ceil(Math.log(value) / Math.LN2));
+}
+
+/**
+ * Mapping from any glTF primitive mode to its equivalent basic mode, as returned by
+ * {@link convertPrimitiveMode}.
+ * @hidden
+ */
+export const BASIC_MODE_MAPPING = {
+	[POINTS]: POINTS,
+	[LINES]: LINES,
+	[LINE_STRIP]: LINES,
+	[LINE_LOOP]: LINES,
+	[TRIANGLES]: TRIANGLES,
+	[TRIANGLE_STRIP]: TRIANGLES,
+	[TRIANGLE_FAN]: TRIANGLES,
+} as Record<GLTF.MeshPrimitiveMode, GLTF.MeshPrimitiveMode>;

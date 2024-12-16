@@ -1,6 +1,7 @@
 import test from 'ava';
 import { Document, NodeIO } from '@gltf-transform/core';
 import { Packet, KHRXMP } from '@gltf-transform/extensions';
+import { cloneDocument } from '@gltf-transform/functions';
 
 const MOCK_CONTEXT_URL = 'https://test.example/1.0/';
 
@@ -57,7 +58,7 @@ test('basic', async (t) => {
 			'test:Foo': true,
 			'dc:Creator': { '@list': ['Acme, Inc.'] },
 		},
-		'serialize to JSON LD'
+		'serialize to JSON LD',
 	);
 
 	// Deserialize.
@@ -140,56 +141,56 @@ test('i/o', async (t) => {
 		{
 			KHR_xmp_json_ld: { packets: [MOCK_JSONLD_PACKET, MOCK_JSONLD_PACKET] },
 		},
-		'writes packets'
+		'writes packets',
 	);
 	t.deepEqual(
 		jsonDocument.json.asset.extensions,
 		{
 			KHR_xmp_json_ld: { packet: 0 },
 		},
-		'writes to asset'
+		'writes to asset',
 	);
 	t.deepEqual(
 		jsonDocument.json.nodes[0].extensions,
 		{
 			KHR_xmp_json_ld: { packet: 1 },
 		},
-		'writes to node'
+		'writes to node',
 	);
 	t.deepEqual(
 		jsonDocument.json.scenes[0].extensions,
 		{
 			KHR_xmp_json_ld: { packet: 1 },
 		},
-		'writes to scene'
+		'writes to scene',
 	);
 	t.deepEqual(
 		jsonDocument.json.meshes[0].extensions,
 		{
 			KHR_xmp_json_ld: { packet: 1 },
 		},
-		'writes to mesh'
+		'writes to mesh',
 	);
 	t.deepEqual(
 		jsonDocument.json.materials[0].extensions,
 		{
 			KHR_xmp_json_ld: { packet: 1 },
 		},
-		'writes to material'
+		'writes to material',
 	);
 	t.deepEqual(
 		jsonDocument.json.images[0].extensions,
 		{
 			KHR_xmp_json_ld: { packet: 1 },
 		},
-		'writes to image'
+		'writes to image',
 	);
 	t.deepEqual(
 		jsonDocument.json.animations[0].extensions,
 		{
 			KHR_xmp_json_ld: { packet: 1 },
 		},
-		'writes to animation'
+		'writes to animation',
 	);
 
 	// Deserialize.
@@ -214,7 +215,7 @@ test('clone', async (t) => {
 	const packet1 = xmpExtension.createPacket().fromJSONLD(MOCK_JSONLD_PACKET);
 	document1.getRoot().setExtension('KHR_xmp_json_ld', packet1);
 	t.is(document1.getRoot().getExtension('KHR_xmp_json_ld'), packet1, 'sets packet');
-	const document2 = document1.clone();
+	const document2 = cloneDocument(document1);
 	const packet2 = document2.getRoot().getExtension('KHR_xmp_json_ld') as Packet;
 	t.truthy(packet2, 'clones packet');
 	t.deepEqual(packet1.toJSONLD(), packet2.toJSONLD(), 'equal packet');

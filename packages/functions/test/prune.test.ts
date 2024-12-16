@@ -1,7 +1,13 @@
 import test from 'ava';
-import { Accessor, Document, PropertyType } from '@gltf-transform/core';
+import { Accessor, Document, Primitive, PropertyType } from '@gltf-transform/core';
+import { KHRMaterialsUnlit } from '@gltf-transform/extensions';
 import { prune } from '@gltf-transform/functions';
 import { logger } from '@gltf-transform/test-utils';
+import ndarray from 'ndarray';
+import { savePixels } from 'ndarray-pixels';
+
+const PIXELS_SOLID = ndarray(new Uint8Array([128, 128, 192, 1]), [1, 1, 4]);
+const PIXELS_NON_SOLID = ndarray(new Uint8Array([64, 64, 128, 1, 32, 32, 128, 1]), [1, 2, 4]);
 
 test('properties', async (t) => {
 	const doc = new Document().setLogger(logger);
@@ -84,6 +90,21 @@ test('leaf nodes', async (t) => {
 	t.truthy(nodeA.isDisposed(), 'nodeA disposed');
 });
 
+test('leaf nodes - extras', async (t) => {
+	const document = new Document().setLogger(logger);
+	const node = document.createNode('CustomNode');
+	node.setExtras({ customData: 'test' });
+	document.createScene().addChild(node);
+
+	await document.transform(prune({ propertyTypes: [PropertyType.NODE], keepLeaves: false, keepExtras: true }));
+
+	t.is(document.getRoot().listNodes().length, 1, '1 nodes');
+
+	await document.transform(prune({ propertyTypes: [PropertyType.NODE], keepLeaves: false, keepExtras: false }));
+
+	t.is(document.getRoot().listNodes().length, 0, '0 nodes');
+});
+
 test('attributes', async (t) => {
 	const document = new Document().setLogger(logger);
 
@@ -116,26 +137,26 @@ test('attributes', async (t) => {
 		prune({
 			propertyTypes: [PropertyType.ACCESSOR],
 			keepAttributes: true,
-		})
+		}),
 	);
 
 	t.deepEqual(
 		[position, tangent, texcoord0, texcoord1, color0, color1].map((a) => a.isDisposed()),
 		new Array(6).fill(false),
-		'keeps required attributes (1/3)'
+		'keeps required attributes (1/3)',
 	);
 
 	await document.transform(
 		prune({
 			propertyTypes: [PropertyType.ACCESSOR],
 			keepAttributes: false,
-		})
+		}),
 	);
 
 	t.deepEqual(
 		[position, tangent, texcoord0, texcoord1, color0].map((a) => a.isDisposed()),
 		new Array(5).fill(false),
-		'keeps required attributes (2/3)'
+		'keeps required attributes (2/3)',
 	);
 	t.is(color1.isDisposed(), true, 'discards COLOR_1');
 
@@ -145,18 +166,18 @@ test('attributes', async (t) => {
 		prune({
 			propertyTypes: [PropertyType.ACCESSOR],
 			keepAttributes: false,
-		})
+		}),
 	);
 
 	t.deepEqual(
 		[position, texcoord0, color0].map((a) => a.isDisposed()),
 		[false, false, false],
-		'keeps required attributes (3/3)'
+		'keeps required attributes (3/3)',
 	);
 	t.deepEqual(
 		[tangent, texcoord1].map((a) => a.isDisposed()),
 		[true, true],
-		'discards TANGENT, TEXCOORD_1'
+		'discards TANGENT, TEXCOORD_1',
 	);
 });
 
@@ -186,20 +207,20 @@ test('attributes - texcoords', async (t) => {
 		.setAttribute('TEXCOORD_5', (uvs[5] = document.createAccessor())); // unused
 	document.createMesh().addPrimitive(primA).addPrimitive(primB);
 
-	await document.transform(prune({ propertyTypes: [PropertyType.ACCESSOR] }));
+	await document.transform(prune({ keepAttributes: true, propertyTypes: [PropertyType.ACCESSOR] }));
 
 	t.deepEqual(
 		uvs.map((a) => a.isDisposed()),
 		[false, false, false, false, false, false],
-		'keeps all texcoords'
+		'keeps all texcoords',
 	);
 
-	await document.transform(prune({ propertyTypes: [PropertyType.ACCESSOR], keepAttributes: false }));
+	await document.transform(prune({ keepAttributes: false, propertyTypes: [PropertyType.ACCESSOR] }));
 
 	t.deepEqual(
 		uvs.map((a) => a.isDisposed()),
 		[true, false, true, false, true, true],
-		'disposes TEXCOORD_0, TEXCOORD_2, TEXCOORD_4, and TEXCOORD_5'
+		'disposes TEXCOORD_0, TEXCOORD_2, TEXCOORD_4, and TEXCOORD_5',
 	);
 
 	t.true(primA.getAttribute('TEXCOORD_0') === uvs[1], 'primA.TEXCOORD_0');
@@ -216,4 +237,134 @@ test('attributes - texcoords', async (t) => {
 
 	t.is(material.getBaseColorTextureInfo().getTexCoord(), 0, 'material.baseColorTexture.texCoord = 0');
 	t.is(material.getNormalTextureInfo().getTexCoord(), 1, 'material.normalTexture.texCoord → 1');
+});
+
+test('attributes - normals', async (t) => {
+	const document = new Document().setLogger(logger);
+
+	const unlitExtension = document.createExtension<KHRMaterialsUnlit>(KHRMaterialsUnlit);
+	const material = document.createMaterial();
+	const materialUnlit = document.createMaterial().setExtension('KHR_materials_unlit', unlitExtension.createUnlit());
+
+	const attribute = document.createAccessor().setArray(new Float32Array(12));
+	const primTriangles = document
+		.createPrimitive()
+		.setMaterial(material)
+		.setAttribute('POSITION', attribute)
+		.setAttribute('NORMAL', attribute)
+		.setMode(Primitive.Mode.TRIANGLES);
+	const primPoints = primTriangles.clone().setMode(Primitive.Mode.POINTS);
+	const primUnlit = primTriangles.clone().setMaterial(materialUnlit);
+	const mesh = document.createMesh().addPrimitive(primTriangles).addPrimitive(primPoints).addPrimitive(primUnlit);
+	const node = document.createNode().setMesh(mesh);
+	document.createScene().addChild(node);
+
+	await document.transform(prune({ keepAttributes: true, propertyTypes: [PropertyType.ACCESSOR] }));
+
+	t.deepEqual(primTriangles.listSemantics(), ['POSITION', 'NORMAL'], 'triangles, keepAttributes=true');
+	t.deepEqual(primPoints.listSemantics(), ['POSITION', 'NORMAL'], 'points, keepAttributes=true');
+	t.deepEqual(primUnlit.listSemantics(), ['POSITION', 'NORMAL'], 'unlit, keepAttributes=true');
+
+	await document.transform(prune({ keepAttributes: false, propertyTypes: [PropertyType.ACCESSOR] }));
+
+	t.deepEqual(primTriangles.listSemantics(), ['POSITION', 'NORMAL'], 'triangles, keepAttributes=false');
+	t.deepEqual(primPoints.listSemantics(), ['POSITION'], 'points, keepAttributes=false');
+	t.deepEqual(primUnlit.listSemantics(), ['POSITION'], 'unlit, keepAttributes=false');
+});
+
+test('indices', async (t) => {
+	const document = new Document().setLogger(logger);
+
+	const indicesA = document
+		.createAccessor()
+		.setType('SCALAR')
+		.setArray(new Uint16Array([0, 1, 2, 3, 4, 5, 6, 7, 8]));
+	const indicesB = document
+		.createAccessor()
+		.setType('SCALAR')
+		.setArray(new Uint16Array([0, 1, 2, 0, 3, 4]));
+	// prettier-ignore
+	const position = document.createAccessor()
+		.setType('VEC3')
+		.setArray(new Float32Array([
+			0, 0, 0,
+			0, 0, 1,
+			0, 1, 0,
+			1, 0, 0,
+			0, 1, 1,
+			1, 1, 0,
+			1, 1, 1,
+			0, 0, 0,
+			0, 0, 0,
+		]));
+	const primA = document.createPrimitive().setIndices(indicesA).setAttribute('POSITION', position);
+	const primB = document.createPrimitive().setIndices(indicesB).setAttribute('POSITION', position);
+	const mesh = document.createMesh().addPrimitive(primA).addPrimitive(primB);
+
+	await document.transform(
+		prune({
+			propertyTypes: [PropertyType.ACCESSOR],
+			keepIndices: true,
+		}),
+	);
+
+	t.is(primA.getIndices(), indicesA, 'no change (1/2)');
+	t.is(primB.getIndices(), indicesB, 'no change (2/2)');
+
+	await document.transform(
+		prune({
+			propertyTypes: [PropertyType.ACCESSOR],
+			keepIndices: false,
+		}),
+	);
+
+	t.is(primA.getIndices(), null, 'prune (1/2)');
+	t.is(primB.getIndices(), indicesB, 'keep (2/2)');
+
+	t.is(indicesA.isDisposed(), true, 'unused indices disposed');
+
+	t.is(primA.isDisposed(), false, 'prim kept (1/2)');
+	t.is(primB.isDisposed(), false, 'prim kept (2/2)');
+	t.is(mesh.isDisposed(), false, 'mesh kept');
+});
+
+test('solid textures', async (t) => {
+	const document = new Document().setLogger(logger);
+
+	const textureNonSolid = document
+		.createTexture()
+		.setImage(await savePixels(PIXELS_NON_SOLID, 'image/png'))
+		.setMimeType('image/png');
+	const textureSolid = document
+		.createTexture()
+		.setImage(await savePixels(PIXELS_SOLID, 'image/png'))
+		.setMimeType('image/png');
+	const textureUnknown = document.createTexture().setImage(new Uint8Array(1)).setMimeType('image/png');
+	const material = document
+		.createMaterial()
+		.setBaseColorTexture(textureNonSolid)
+		.setMetallicRoughnessTexture(textureSolid)
+		.setEmissiveTexture(textureUnknown);
+	const prim = document.createPrimitive().setMaterial(material);
+	const mesh = document.createMesh().addPrimitive(prim);
+	const node = document.createNode('A').setMesh(mesh);
+	document.createScene().addChild(node);
+
+	await document.transform(prune({ keepSolidTextures: true }));
+
+	t.false(textureSolid.isDisposed());
+	t.false(textureNonSolid.isDisposed());
+	t.false(textureUnknown.isDisposed());
+
+	await document.transform(prune({ keepSolidTextures: false }));
+
+	t.true(textureSolid.isDisposed());
+	t.false(textureNonSolid.isDisposed());
+	t.false(textureUnknown.isDisposed());
+
+	t.deepEqual(material.getBaseColorFactor(), [1, 1, 1, 1], 'baseColorFactor');
+	t.deepEqual(material.getEmissiveFactor(), [0, 0, 0], 'baseColorFactor');
+	t.is(material.getRoughnessFactor().toFixed(2), '0.50', 'roughnessFactor');
+	t.is(material.getMetallicFactor().toFixed(2), '0.75', 'metallicFactor');
+	t.is(material.getMetallicRoughnessTexture(), null, 'metallicRoughnessTexture');
 });

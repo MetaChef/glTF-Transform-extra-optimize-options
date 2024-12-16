@@ -23,8 +23,10 @@ import { max, min, scale, transformMat4 } from 'gl-matrix/vec3';
 import { InstancedMesh, KHRMeshQuantization } from '@gltf-transform/extensions';
 import type { Volume } from '@gltf-transform/extensions';
 import { prune } from './prune.js';
-import { createTransform } from './utils.js';
+import { assignDefaults, createTransform } from './utils.js';
 import { sortPrimitiveWeights } from './sort-primitive-weights.js';
+import { getPrimitiveVertexCount, VertexCountMethod } from './get-vertex-count.js';
+import { compactPrimitive } from './compact-primitive.js';
 
 const NAME = 'quantize';
 
@@ -42,6 +44,8 @@ const TRS_CHANNELS = [TRANSLATION, ROTATION, SCALE];
 export interface QuantizeOptions {
 	/** Pattern (regex) used to filter vertex attribute semantics for quantization. Default: all. */
 	pattern?: RegExp;
+	/** Pattern (regex) used to filter morph target semantics for quantization. Default: `options.pattern`. */
+	patternTargets?: RegExp;
 	/** Bounds for quantization grid. */
 	quantizationVolume?: 'mesh' | 'scene';
 	/** Quantization bits for `POSITION` attributes. */
@@ -58,9 +62,18 @@ export interface QuantizeOptions {
 	quantizeGeneric?: number;
 	/** Normalize weight attributes. */
 	normalizeWeights?: boolean;
+	/**
+	 * Whether to perform cleanup steps after completing the operation. Recommended, and enabled by
+	 * default. Cleanup removes temporary resources created during the operation, but may also remove
+	 * pre-existing unused or duplicate resources in the {@link Document}. Applications that require
+	 * keeping these resources may need to disable cleanup, instead calling {@link dedup} and
+	 * {@link prune} manually (with customized options) later in the processing pipeline.
+	 * @experimental
+	 */
+	cleanup?: boolean;
 }
 
-export const QUANTIZE_DEFAULTS: Required<QuantizeOptions> = {
+export const QUANTIZE_DEFAULTS: Required<Omit<QuantizeOptions, 'patternTargets'>> = {
 	pattern: /.*/,
 	quantizationVolume: 'mesh',
 	quantizePosition: 14,
@@ -70,6 +83,7 @@ export const QUANTIZE_DEFAULTS: Required<QuantizeOptions> = {
 	quantizeWeight: 8,
 	quantizeGeneric: 12,
 	normalizeWeights: true,
+	cleanup: true,
 };
 
 /**
@@ -82,18 +96,50 @@ export const QUANTIZE_DEFAULTS: Required<QuantizeOptions> = {
 
 /**
  * Quantizes vertex attributes with `KHR_mesh_quantization`, reducing the size and memory footprint
- * of the file.
+ * of the file. Conceptually, quantization refers to snapping values to regular intervals; vertex
+ * positions are snapped to a 3D grid, UVs to a 2D grid, and so on. When quantized to <= 16 bits,
+ * larger component types may be more compactly stored as 16-bit or 8-bit attributes.
+ *
+ * Often, it can be useful to quantize to precision lower than the maximum allowed by the component
+ * type. Positions quantized to 14 bits in a 16-bit accessor will occupy 16 bits in VRAM, but they
+ * can be compressed further for network compression with lossless encodings such as ZSTD.
+ *
+ * Vertex positions are shifted into [-1,1] or [0,1] range before quantization. Compensating for
+ * that shift, a transform is applied to the parent {@link Node}, or inverse bind matrices for a
+ * {@link Skin} if applicable. Materials using {@link KHRMaterialsVolume} are adjusted to maintain
+ * appearance. In future releases, UVs may also be transformed with {@link KHRTextureTransform}.
+ * Currently UVs outside of [0,1] range are not quantized.
+ *
+ * In most cases, quantization requires {@link KHRMeshQuantization}; the extension will be added
+ * automatically when `quantize()` is applied. When applying meshopt compression with
+ * {@link EXTMeshoptCompression}, quantization is usually applied before compression.
+ *
+ * Example:
+ *
+ * ```javascript
+ * import { quantize } from '@gltf-transform/functions';
+ *
+ * await document.transform(
+ *   quantize({
+ *		quantizePosition: 14,
+ *		quantizeNormal: 10,
+ *   }),
+ * );
+ * ```
+ *
+ * For the inverse operation, see {@link dequantize}.
  *
  * @category Transforms
  */
 export function quantize(_options: QuantizeOptions = QUANTIZE_DEFAULTS): Transform {
-	const options = { ...QUANTIZE_DEFAULTS, ..._options } as Required<QuantizeOptions>;
+	const options = assignDefaults(QUANTIZE_DEFAULTS, {
+		patternTargets: _options.pattern || QUANTIZE_DEFAULTS.pattern,
+		..._options,
+	});
 
-	return createTransform(NAME, async (doc: Document): Promise<void> => {
-		const logger = doc.getLogger();
-		const root = doc.getRoot();
-
-		doc.createExtension(KHRMeshQuantization).setRequired(true);
+	return createTransform(NAME, async (document: Document): Promise<void> => {
+		const logger = document.getLogger();
+		const root = document.getRoot();
 
 		// Compute vertex position quantization volume.
 		let nodeTransform: VectorTransform<vec3> | undefined = undefined;
@@ -102,28 +148,52 @@ export function quantize(_options: QuantizeOptions = QUANTIZE_DEFAULTS): Transfo
 		}
 
 		// Quantize mesh primitives.
-		for (const mesh of doc.getRoot().listMeshes()) {
+		for (const mesh of document.getRoot().listMeshes()) {
 			if (options.quantizationVolume === 'mesh') {
 				nodeTransform = getNodeTransform(getPositionQuantizationVolume(mesh));
 			}
 
 			if (nodeTransform && options.pattern.test('POSITION')) {
-				transformMeshParents(doc, mesh, nodeTransform);
+				transformMeshParents(document, mesh, nodeTransform);
 				transformMeshMaterials(mesh, 1 / nodeTransform.scale);
 			}
 
 			for (const prim of mesh.listPrimitives()) {
-				quantizePrimitive(doc, prim, nodeTransform!, options);
+				const renderCount = getPrimitiveVertexCount(prim, VertexCountMethod.RENDER);
+				const uploadCount = getPrimitiveVertexCount(prim, VertexCountMethod.UPLOAD);
+				if (renderCount < uploadCount / 2) {
+					compactPrimitive(prim);
+				}
+				quantizePrimitive(document, prim, nodeTransform!, options);
 				for (const target of prim.listTargets()) {
-					quantizePrimitive(doc, target, nodeTransform!, options);
+					quantizePrimitive(document, target, nodeTransform!, options);
 				}
 			}
 		}
 
-		await doc.transform(
-			prune({ propertyTypes: [PropertyType.ACCESSOR, PropertyType.SKIN, PropertyType.MATERIAL] }),
-			dedup({ propertyTypes: [PropertyType.ACCESSOR, PropertyType.MATERIAL, PropertyType.SKIN] })
-		);
+		const needsExtension = root
+			.listMeshes()
+			.flatMap((mesh) => mesh.listPrimitives())
+			.some(isQuantizedPrimitive);
+		if (needsExtension) {
+			document.createExtension(KHRMeshQuantization).setRequired(true);
+		}
+
+		if (options.cleanup) {
+			await document.transform(
+				prune({
+					propertyTypes: [PropertyType.ACCESSOR, PropertyType.SKIN, PropertyType.MATERIAL],
+					keepAttributes: true,
+					keepIndices: true,
+					keepLeaves: true,
+					keepSolidTextures: true,
+				}),
+				dedup({
+					propertyTypes: [PropertyType.ACCESSOR, PropertyType.MATERIAL, PropertyType.SKIN],
+					keepUniqueNames: true,
+				}),
+			);
+		}
 
 		logger.debug(`${NAME}: Complete.`);
 	});
@@ -133,14 +203,17 @@ function quantizePrimitive(
 	doc: Document,
 	prim: Primitive | PrimitiveTarget,
 	nodeTransform: VectorTransform<vec3>,
-	options: Required<QuantizeOptions>
+	options: Required<QuantizeOptions>,
 ): void {
+	const isTarget = prim instanceof PrimitiveTarget;
 	const logger = doc.getLogger();
 
 	for (const semantic of prim.listSemantics()) {
-		if (!options.pattern.test(semantic)) continue;
+		if (!isTarget && !options.pattern.test(semantic)) continue;
+		if (isTarget && !options.patternTargets.test(semantic)) continue;
 
 		const srcAttribute = prim.getAttribute(semantic)!;
+
 		const { bits, ctor } = getQuantizationSettings(semantic, srcAttribute, logger, options);
 
 		if (!ctor) continue;
@@ -165,7 +238,7 @@ function quantizePrimitive(
 
 		// Quantize the vertex attribute.
 		quantizeAttribute(dstAttribute, ctor, bits);
-		prim.swap(srcAttribute, dstAttribute);
+		prim.setAttribute(semantic, dstAttribute);
 	}
 
 	// Normalize skinning weights.
@@ -193,7 +266,7 @@ function getNodeTransform(volume: bbox): VectorTransform<vec3> {
 	const scale = Math.max(
 		(max[0] - min[0]) / 2, // Divide because interval [-1,1] has length 2.
 		(max[1] - min[1]) / 2,
-		(max[2] - min[2]) / 2
+		(max[2] - min[2]) / 2,
 	);
 
 	// Original center of the mesh, in local space.
@@ -294,7 +367,7 @@ function transformBatch(batch: InstancedMesh, nodeTransform: VectorTransform<vec
 			instanceTranslation ? (instanceTranslation.getElement(i, t) as vec3) : T_IDENTITY,
 			instanceRotation ? (instanceRotation.getElement(i, r) as vec4) : R_IDENTITY,
 			instanceScale ? (instanceScale.getElement(i, s) as vec3) : S_IDENTITY,
-			instanceMatrix
+			instanceMatrix,
 		);
 
 		multiplyMat4(instanceMatrix, instanceMatrix, transformMatrix);
@@ -347,12 +420,16 @@ function quantizeAttribute(attribute: Accessor, ctor: TypedArrayConstructor, bit
 	const scale = Math.pow(2, quantBits) - 1;
 	const lo = storageBits - quantBits;
 	const hi = 2 * quantBits - storageBits;
+	const range = [signBits > 0 ? -1 : 0, 1] as vec2;
 
 	for (let i = 0, di = 0, el: number[] = []; i < attribute.getCount(); i++) {
 		attribute.getElement(i, el);
 		for (let j = 0; j < el.length; j++) {
+			// Clamp to range.
+			let value = clamp(el[j], range);
+
 			// Map [0.0 ... 1.0] to [0 ... scale].
-			let value = Math.round(Math.abs(el[j]) * scale);
+			value = Math.round(Math.abs(value) * scale);
 
 			// Replicate msb to missing lsb.
 			value = (value << lo) | (value >> hi);
@@ -370,7 +447,7 @@ function getQuantizationSettings(
 	semantic: string,
 	attribute: Accessor,
 	logger: ILogger,
-	options: Required<QuantizeOptions>
+	options: Required<QuantizeOptions>,
 ): { bits: number; ctor?: TypedArrayConstructor } {
 	const min = attribute.getMinNormalized([]);
 	const max = attribute.getMaxNormalized([]);
@@ -455,6 +532,37 @@ function getPositionQuantizationVolume(mesh: Mesh): bbox {
 	return bbox;
 }
 
+function isQuantizedAttribute(semantic: string, attribute: Accessor): boolean {
+	// https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#meshes-overview
+	const componentSize = attribute.getComponentSize();
+	if (semantic === 'POSITION') return componentSize < 4;
+	if (semantic === 'NORMAL') return componentSize < 4;
+	if (semantic === 'TANGENT') return componentSize < 4;
+	if (semantic.startsWith('TEXCOORD_')) {
+		const componentType = attribute.getComponentType();
+		const normalized = attribute.getNormalized();
+		return (
+			componentSize < 4 &&
+			!(normalized && componentType === Accessor.ComponentType.UNSIGNED_BYTE) &&
+			!(normalized && componentType === Accessor.ComponentType.UNSIGNED_SHORT)
+		);
+	}
+	return false;
+}
+
+function isQuantizedPrimitive(prim: Primitive | PrimitiveTarget): boolean {
+	for (const semantic of prim.listSemantics()) {
+		const attribute = prim.getAttribute('POSITION')!;
+		if (isQuantizedAttribute(semantic, attribute)) {
+			return true;
+		}
+	}
+	if (prim.propertyType === PropertyType.PRIMITIVE) {
+		return prim.listTargets().some(isQuantizedPrimitive);
+	}
+	return false;
+}
+
 /** Computes total min and max of all Accessors in a list. */
 function flatBounds<T = vec2 | vec3>(accessors: Accessor[], elementSize: number): { min: T; max: T } {
 	const min: number[] = new Array(elementSize).fill(Infinity);
@@ -495,4 +603,8 @@ function fromTransform(transform: VectorTransform<vec3>): mat4 {
 		transform.scale,
 		transform.scale,
 	]) as mat4;
+}
+
+function clamp(value: number, range: vec2): number {
+	return Math.min(Math.max(value, range[0]), range[1]);
 }

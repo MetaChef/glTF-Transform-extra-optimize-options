@@ -106,8 +106,12 @@ test('indexed', async (t) => {
 		0, 0, 0, 0,
 	], 'position data');
 
-	t.is(primAB.getIndices().getCount(), 6, 'indices data');
+	t.deepEqual(Array.from(primAB.getIndices().getArray()), [0, 1, 2, 3, 4, 5], 'indices data');
 });
+
+/******************************************************************************
+ * UTILITIES
+ */
 
 function createPrimA(document: Document): [Primitive, Accessor, Accessor] {
 	// prettier-ignore

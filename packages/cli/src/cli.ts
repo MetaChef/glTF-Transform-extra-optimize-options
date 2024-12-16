@@ -2,21 +2,20 @@ import { URL } from 'url';
 import { promises as fs, readFileSync } from 'fs';
 import micromatch from 'micromatch';
 import { gzip } from 'node-gzip';
-import fetch from 'node-fetch';
+import fetch from 'node-fetch'; // TODO(deps): Replace when v20 reaches end of maintenance.
 import mikktspace from 'mikktspace';
-import sharp from 'sharp';
 import { MeshoptEncoder, MeshoptSimplifier } from 'meshoptimizer';
 import { ready as resampleReady, resample as resampleWASM } from 'keyframe-resample';
 import { Logger, NodeIO, PropertyType, VertexLayout, vec2, Transform } from '@gltf-transform/core';
 import {
 	CenterOptions,
 	InstanceOptions,
+	INSTANCE_DEFAULTS,
 	PartitionOptions,
 	PruneOptions,
 	QUANTIZE_DEFAULTS,
 	ResampleOptions,
 	SequenceOptions,
-	TEXTURE_RESIZE_DEFAULTS,
 	TextureResizeFilter,
 	UnweldOptions,
 	WeldOptions,
@@ -41,7 +40,6 @@ import {
 	DracoOptions,
 	simplify,
 	SIMPLIFY_DEFAULTS,
-	WELD_DEFAULTS,
 	textureCompress,
 	FlattenOptions,
 	flatten,
@@ -53,6 +51,9 @@ import {
 	palette,
 	PaletteOptions,
 	PALETTE_DEFAULTS,
+	MESHOPT_DEFAULTS,
+	TEXTURE_COMPRESS_SUPPORTED_FORMATS,
+	PRUNE_DEFAULTS,
 } from '@gltf-transform/functions';
 import { inspect } from './inspect.js';
 import {
@@ -66,7 +67,7 @@ import {
 	XMPOptions,
 	xmp,
 } from './transforms/index.js';
-import { formatBytes, MICROMATCH_OPTIONS, underline, TableFormat, dim } from './util.js';
+import { formatBytes, MICROMATCH_OPTIONS, underline, TableFormat, dim, regexFromArray } from './util.js';
 import { Session } from './session.js';
 import { ValidateOptions, validate } from './validate.js';
 import { getConfig, loadConfig } from './config.js';
@@ -198,7 +199,7 @@ Example:
 		default: TableFormat.PRETTY,
 	})
 	.action(({ args, options, logger }) => {
-		validate(args.input as string, options as unknown as ValidateOptions, logger as unknown as Logger);
+		return validate(args.input as string, options as unknown as ValidateOptions, logger as unknown as Logger);
 	});
 
 program.section('Package', '📦');
@@ -250,21 +251,13 @@ commands or using the scripting API.
 	})
 	.option('--instance-min <min>', 'Number of instances required for instancing.', {
 		validator: Validator.NUMBER,
-		default: 5,
+		default: INSTANCE_DEFAULTS.min,
+	})
+	.option('--meshopt-level <level>', 'Meshopt compression level.', {
+		validator: ['medium', 'high'],
+		default: 'high',
 	})
 	.option('--palette <bool>', 'Creates palette textures and merges materials.', {
-		validator: Validator.BOOLEAN,
-		default: true,
-	})
-	.option('--sparse <bool>', 'Reduces storage for zero-filled arrays.', {
-		validator: Validator.BOOLEAN,
-		default: true,
-	})
-	.option('--resample <bool>', 'Resample animations, losslessly deduplicating keyframes.', {
-		validator: Validator.BOOLEAN,
-		default: true,
-	})
-	.option('--prune <bool>', 'Remove unreferenced properties from the file.', {
 		validator: Validator.BOOLEAN,
 		default: true,
 	})
@@ -274,7 +267,7 @@ commands or using the scripting API.
 			'material values are found, no palettes will be generated.',
 		{
 			validator: Validator.NUMBER,
-			default: 5,
+			default: PALETTE_DEFAULTS.min,
 		},
 	)
 	.option('--simplify <bool>', 'Simplify mesh geometry with meshoptimizer.', {
@@ -285,13 +278,37 @@ commands or using the scripting API.
 		validator: Validator.NUMBER,
 		default: SIMPLIFY_DEFAULTS.error,
 	})
+	.option('--simplify-ratio <ratio>', 'Target ratio (0–1) of vertices to keep.', {
+		validator: Validator.NUMBER,
+		default: SIMPLIFY_DEFAULTS.ratio,
+	})
+	.option('--simplify-lock-border <bool>', 'Whether to lock topological borders of the mesh.', {
+		validator: Validator.BOOLEAN,
+		default: SIMPLIFY_DEFAULTS.lockBorder,
+	})
+	.option('--prune <bool>', 'Removes properties from the file if they are not referenced by a Scene.', {
+		validator: Validator.BOOLEAN,
+		default: true,
+	})
+	.option('--prune-attributes <bool>', 'Whether to prune unused vertex attributes.', {
+		validator: Validator.BOOLEAN,
+		default: true,
+	})
+	.option(
+		'--prune-solid-textures <bool>',
+		'Whether to prune solid (single-color) textures, converting them to material factors.',
+		{
+			validator: Validator.BOOLEAN,
+			default: true,
+		},
+	)
 	.option(
 		'--compress <method>',
 		'Floating point compression method. Draco compresses geometry; Meshopt ' +
 			'and quantization compress geometry and animation.',
 		{
 			validator: ['draco', 'meshopt', 'quantize', false],
-			default: 'draco',
+			default: 'meshopt',
 		},
 	)
 	.option(
@@ -315,7 +332,23 @@ commands or using the scripting API.
 		validator: Validator.BOOLEAN,
 		default: true,
 	})
-	.option('--weld <bool>', 'Index geometry and merge similar vertices. Often required when simplifying geometry.', {
+	.option('--join-meshes <bool>', 'Join distinct meshes and nodes. Requires `--join`.', {
+		validator: Validator.BOOLEAN,
+		default: !JOIN_DEFAULTS.keepMeshes,
+	})
+	.option('--join-named <bool>', 'Join named meshes and nodes. Requires `--join`.', {
+		validator: Validator.BOOLEAN,
+		default: !JOIN_DEFAULTS.keepNamed,
+	})
+	.option('--weld <bool>', 'Merge equivalent vertices. Required when simplifying geometry.', {
+		validator: Validator.BOOLEAN,
+		default: true,
+	})
+	.option('--sparse <bool>', 'Reduces storage for zero-filled arrays.', {
+		validator: Validator.BOOLEAN,
+		default: true,
+	})
+	.option('--resample <bool>', 'Resample animations, losslessly deduplicating keyframes.', {
 		validator: Validator.BOOLEAN,
 		default: true,
 	})
@@ -323,59 +356,113 @@ commands or using the scripting API.
 		const opts = options as {
 			instance: boolean;
 			instanceMin: number;
+			meshoptLevel: 'medium' | 'high';
 			palette: boolean;
 			paletteMin: number;
 			simplify: boolean;
 			simplifyError: number;
+			simplifyRatio: number;
+			simplifyLockBorder: boolean;
+			prune: boolean;
+			pruneAttributes: boolean;
+			pruneSolidTextures: boolean;
 			compress: 'draco' | 'meshopt' | 'quantize' | false;
 			textureCompress: 'ktx2' | 'webp' | 'webp' | 'auto' | false;
 			textureSize: number;
 			flatten: boolean;
 			join: boolean;
+			joinNamed: boolean;
+			joinMeshes: boolean;
 			weld: boolean;
 			sparse: boolean;
 			resample: boolean;
-			prune: boolean;
 		};
 
 		// Baseline transforms.
 		const transforms: Transform[] = [dedup()];
 
 		if (opts.instance) transforms.push(instance({ min: opts.instanceMin }));
-		if (opts.palette) transforms.push(palette({ min: opts.paletteMin }));
-		if (opts.flatten) transforms.push(flatten());
-		if (opts.join) transforms.push(join());
 
-		if (opts.weld) {
+		if (opts.palette) {
 			transforms.push(
-				weld({
-					tolerance: opts.simplify ? opts.simplifyError / 2 : WELD_DEFAULTS.tolerance,
-					toleranceNormal: opts.simplify ? 0.5 : WELD_DEFAULTS.toleranceNormal,
+				palette({
+					min: opts.paletteMin,
+					keepAttributes: !opts.prune || !opts.pruneAttributes,
 				}),
 			);
 		}
 
-		if (opts.simplify) {
-			transforms.push(simplify({ simplifier: MeshoptSimplifier, error: opts.simplifyError }));
+		if (opts.flatten) transforms.push(flatten());
+		if (opts.join) {
+			transforms.push(
+				join({
+					keepNamed: !opts.joinNamed,
+					keepMeshes: !opts.joinMeshes,
+				})
+			);
 		}
-		
-		if(opts.resample) transforms.push(resample({ ready: resampleReady, resample: resampleWASM }))
-		if(opts.prune) transforms.push(prune({ keepAttributes: false, keepLeaves: false }))
-		if (opts.sparse) transforms.push(sparse())
+		if (opts.weld) transforms.push(weld());
+
+		if (opts.simplify) {
+			transforms.push(
+				simplify({
+					simplifier: MeshoptSimplifier,
+					error: opts.simplifyError,
+					ratio: opts.simplifyRatio,
+					lockBorder: opts.simplifyLockBorder,
+				}),
+			);
+		}
+
+		if (opts.resample) transforms.push(resample({ ready: resampleReady, resample: resampleWASM }));
+
+		if (opts.prune) {
+			transforms.push(
+				prune({
+					keepAttributes: !opts.pruneAttributes,
+					keepIndices: false,
+					keepLeaves: false,
+					keepSolidTextures: !opts.pruneSolidTextures,
+				}),
+			);
+		}
+
+		if (opts.sparse) transforms.push(sparse());
 
 		// Texture compression.
 		if (opts.textureCompress === 'ktx2') {
-			const slotsUASTC = /normalTexture|occlusionTexture|metallicRoughnessTexture/; // Use a regular expression
+			const { default: encoder } = await import('sharp');
+			const slotsUASTC = micromatch.makeRe(
+				'{normalTexture,occlusionTexture,metallicRoughnessTexture}',
+				MICROMATCH_OPTIONS,
+			);
 			transforms.push(
-				toktx({ mode: Mode.UASTC, slots: slotsUASTC, level: 4, rdo: 4, zstd: 18 }),
-				toktx({ mode: Mode.ETC1S, quality: 255 }),
+				toktx({
+					encoder,
+					resize: [opts.textureSize, opts.textureSize],
+					mode: Mode.UASTC,
+					slots: slotsUASTC,
+					level: 4,
+					rdo: true,
+					rdoLambda: 4,
+					limitInputPixels: options.limitInputPixels as boolean,
+				}),
+				toktx({
+					encoder,
+					resize: [opts.textureSize, opts.textureSize],
+					mode: Mode.ETC1S,
+					quality: 255,
+					limitInputPixels: options.limitInputPixels as boolean,
+				}),
 			);
 		} else if (opts.textureCompress !== false) {
+			const { default: encoder } = await import('sharp');
 			transforms.push(
 				textureCompress({
-					encoder: sharp,
-					targetFormat: opts.textureCompress === 'auto' ? undefined : opts.textureCompress,
+					encoder,
 					resize: [opts.textureSize, opts.textureSize],
+					targetFormat: opts.textureCompress === 'auto' ? undefined : opts.textureCompress,
+					limitInputPixels: options.limitInputPixels as boolean,
 				}),
 			);
 		}
@@ -385,7 +472,7 @@ commands or using the scripting API.
 		if (opts.compress === 'draco') {
 			transforms.push(draco());
 		} else if (opts.compress === 'meshopt') {
-			transforms.push(meshopt({ encoder: MeshoptEncoder }));
+			transforms.push(meshopt({ encoder: MeshoptEncoder, level: opts.meshoptLevel }));
 		} else if (opts.compress === 'quantize') {
 			transforms.push(quantize());
 		}
@@ -414,10 +501,14 @@ Example:
 		validator: Validator.BOOLEAN,
 		default: false,
 	})
+	.option('--merge-scenes', 'Whether to merge scenes, or keep one scene per input file.', {
+		validator: Validator.BOOLEAN,
+		default: false,
+	})
 	.action(({ args, options, logger }) => {
 		const paths = typeof args.path === 'string' ? args.path.split(',') : (args.path as string[]);
 		const output = paths.pop();
-		return Session.create(io, logger, '', output).transform(merge({ io, paths, partition: !!options.partition }));
+		return Session.create(io, logger, '', output).transform(merge({ io, paths, ...options }));
 	});
 
 // PARTITION
@@ -509,12 +600,24 @@ that are children of a scene.
 	.argument('<output>', OUTPUT_DESC)
 	.option('--keep-attributes <keepAttributes>', 'Whether to keep unused vertex attributes', {
 		validator: Validator.BOOLEAN,
-		default: true,
+		default: PRUNE_DEFAULTS.keepAttributes,
+	})
+	.option('--keep-indices <keepIndices>', 'Whether to keep unused mesh indices', {
+		validator: Validator.BOOLEAN,
+		default: PRUNE_DEFAULTS.keepIndices,
 	})
 	.option('--keep-leaves <keepLeaves>', 'Whether to keep empty leaf nodes', {
 		validator: Validator.BOOLEAN,
-		default: false,
+		default: PRUNE_DEFAULTS.keepLeaves,
 	})
+	.option(
+		'--keep-solid-textures <keepSolidTextures>',
+		'Whether to keep solid (single-color) textures, or convert to material factors',
+		{
+			validator: Validator.BOOLEAN,
+			default: PRUNE_DEFAULTS.keepSolidTextures,
+		},
+	)
 	.action(({ args, options, logger }) =>
 		Session.create(io, logger, args.input, args.output).transform(prune(options as unknown as PruneOptions)),
 	);
@@ -625,6 +728,15 @@ https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Vendor/EXT_mesh_
 	)
 	.argument('<input>', INPUT_DESC)
 	.argument('<output>', OUTPUT_DESC)
+	.option(
+		'--min <count>',
+		'Minimum number of meshes in a batch. If fewer compatible meshes ' +
+			'are found, no instanced batches will be generated.',
+		{
+			validator: Validator.NUMBER,
+			default: INSTANCE_DEFAULTS.min,
+		},
+	)
 	.action(({ args, options, logger }) =>
 		Session.create(io, logger, args.input, args.output).transform(instance({ ...options } as InstanceOptions)),
 	);
@@ -665,11 +777,11 @@ EXT_mesh_gpu_instancing.
 	)
 	.argument('<input>', INPUT_DESC)
 	.argument('<output>', OUTPUT_DESC)
-	.option('--keepMeshes <bool>', 'Prevents joining distinct Meshes and Nodes.', {
+	.option('--keepMeshes <bool>', 'Prevents joining distinct meshes and nodes.', {
 		validator: Validator.BOOLEAN,
 		default: JOIN_DEFAULTS.keepMeshes,
 	})
-	.option('--keepNamed <bool>', 'Prevents joining named Meshes and Nodes.', {
+	.option('--keepNamed <bool>', 'Prevents joining named meshes and nodes.', {
 		validator: Validator.BOOLEAN,
 		default: JOIN_DEFAULTS.keepNamed,
 	})
@@ -772,6 +884,34 @@ ${underline('References')}
 		validator: ['medium', 'high'],
 		default: 'high',
 	})
+	.option('--quantize-position <bits>', 'Precision for POSITION attributes.', {
+		validator: Validator.NUMBER,
+		default: MESHOPT_DEFAULTS.quantizePosition,
+	})
+	.option('--quantize-normal <bits>', 'Precision for NORMAL and TANGENT attributes.', {
+		validator: Validator.NUMBER,
+		default: MESHOPT_DEFAULTS.quantizeNormal,
+	})
+	.option('--quantize-texcoord <bits>', 'Precision for TEXCOORD_* attributes.', {
+		validator: Validator.NUMBER,
+		default: MESHOPT_DEFAULTS.quantizeTexcoord,
+	})
+	.option('--quantize-color <bits>', 'Precision for COLOR_* attributes.', {
+		validator: Validator.NUMBER,
+		default: MESHOPT_DEFAULTS.quantizeColor,
+	})
+	.option('--quantize-weight <bits>', 'Precision for WEIGHTS_* attributes.', {
+		validator: Validator.NUMBER,
+		default: MESHOPT_DEFAULTS.quantizeWeight,
+	})
+	.option('--quantize-generic <bits>', 'Precision for custom (_*) attributes.', {
+		validator: Validator.NUMBER,
+		default: MESHOPT_DEFAULTS.quantizeGeneric,
+	})
+	.option('--quantization-volume <volume>', 'Bounds for quantization grid.', {
+		validator: ['mesh', 'scene'],
+		default: QUANTIZE_DEFAULTS.quantizationVolume,
+	})
 	.action(({ args, options, logger }) =>
 		Session.create(io, logger, args.input, args.output).transform(meshopt({ encoder: MeshoptEncoder, ...options })),
 	);
@@ -860,35 +1000,16 @@ Removes KHR_mesh_quantization, if present.`.trim(),
 
 // WELD
 program
-	.command('weld', 'Index geometry and optionally merge similar vertices')
+	.command('weld', 'Merge equivalent vertices to optimize geometry')
 	.help(
 		`
-Index geometry and optionally merge similar vertices. When merged and indexed,
-data is shared more efficiently between vertices. File size can be reduced, and
-the GPU can sometimes use the vertex cache more efficiently.
-
-When welding, the --tolerance threshold determines which vertices qualify for
-welding based on distance between the vertices as a fraction of the primitive's
-bounding box (AABB). For example, --tolerance=0.01 welds vertices within +/-1%
-of the AABB's longest dimension. Other vertex attributes are also compared
-during welding, with attribute-specific thresholds. For --tolerance=0, geometry
-is indexed in place, without merging.
-
-To preserve visual appearance consistently, use low --tolerance-normal thresholds
-around 0.1 (±3º). To pre-processing a scene before simplification or LOD creation,
-use higher thresholds around 0.5 (±30º).
+Welds mesh geometry, merging bitwise identical vertices. When merged and
+indexed, data is shared more efficiently between vertices. File size
+can be reduced, and the GPU uses the vertex cache more efficiently.
 	`.trim(),
 	)
 	.argument('<input>', INPUT_DESC)
 	.argument('<output>', OUTPUT_DESC)
-	.option('--tolerance', 'Tolerance for vertex positions, as a fraction of primitive AABB', {
-		validator: Validator.NUMBER,
-		default: WELD_DEFAULTS.tolerance,
-	})
-	.option('--tolerance-normal', 'Tolerance for vertex normals, in radians', {
-		validator: Validator.NUMBER,
-		default: WELD_DEFAULTS.toleranceNormal,
-	})
 	.action(({ args, options, logger }) =>
 		Session.create(io, logger, args.input, args.output).transform(weld(options as unknown as WeldOptions)),
 	);
@@ -939,7 +1060,9 @@ compute MikkTSpace tangents at runtime.
 	})
 	.action(({ args, options, logger }) =>
 		Session.create(io, logger, args.input, args.output).transform(
+			unweld(),
 			tangents({ generateTangents: mikktspace.generateTangents, ...options }),
+			weld(),
 		),
 	);
 
@@ -1003,7 +1126,7 @@ Based on the meshoptimizer library (https://github.com/zeux/meshoptimizer).
 		validator: Validator.NUMBER,
 		default: SIMPLIFY_DEFAULTS.error,
 	})
-	.option('--lock-border <lockBorder>', 'Whether to lock topological borders of the mesh', {
+	.option('--lock-border <bool>', 'Whether to lock topological borders of the mesh', {
 		validator: Validator.BOOLEAN,
 		default: SIMPLIFY_DEFAULTS.lockBorder,
 	})
@@ -1116,22 +1239,38 @@ preserving original aspect ratio. Texture dimensions are never increased.
 	})
 	.option('--filter', 'Resampling filter', {
 		validator: [TextureResizeFilter.LANCZOS3, TextureResizeFilter.LANCZOS2],
-		default: TEXTURE_RESIZE_DEFAULTS.filter,
+		default: TextureResizeFilter.LANCZOS3,
 	})
 	.option('--width <pixels>', 'Maximum width (px) of output textures.', {
 		validator: Validator.NUMBER,
-		required: true,
 	})
 	.option('--height <pixels>', 'Maximum height (px) of output textures.', {
 		validator: Validator.NUMBER,
-		required: true,
+	})
+	.option('--power-of-two <pot>', 'Resize in two dimensions. Overrides --width and --height.', {
+		validator: ['nearest', 'ceil', 'floor'],
 	})
 	.action(async ({ args, options, logger }) => {
 		const pattern = options.pattern ? micromatch.makeRe(String(options.pattern), MICROMATCH_OPTIONS) : null;
+		const { default: encoder } = await import('sharp');
+
+		type Preset = 'nearest-pot' | 'ceil-pot' | 'floor-pot';
+		let resize: vec2 | Preset;
+		if (options.powerOfTwo) {
+			if (options.width || options.height) {
+				logger.warn('When --power-of-two is specified, --width and --height are ignored.');
+			}
+			resize = `${options.powerOfTwo}-pot` as Preset;
+		} else if (Number.isInteger(options.width) && Number.isInteger(options.height)) {
+			resize = [Number(options.width), Number(options.height)];
+		} else {
+			throw new Error(`Must specify --width and --height, or --power-of-two.`);
+		}
+
 		return Session.create(io, logger, args.input, args.output).transform(
 			textureCompress({
-				encoder: sharp,
-				resize: [options.width, options.height] as vec2,
+				encoder,
+				resize,
 				resizeFilter: options.filter as TextureResizeFilter,
 				pattern,
 			}),
@@ -1201,42 +1340,37 @@ normal maps and ETC1S for other textures, for example.`.trim(),
 	.option(
 		'--max-endpoints <max_endpoints>',
 		'Manually set the maximum number of color endpoint clusters from' + ' 1-16128.',
-		{ validator: Validator.NUMBER },
+		{ validator: Validator.NUMBER, default: ETC1S_DEFAULTS.maxEndpoints },
 	)
 	.option(
 		'--max-selectors <max_selectors>',
 		'Manually set the maximum number of color selector clusters from' + ' 1-16128.',
-		{ validator: Validator.NUMBER },
-	)
-	.option(
-		'--power-of-two',
-		'Resizes any non-power-of-two textures to the closest power-of-two' +
-			' dimensions, not exceeding 2048x2048px. Required for ' +
-			' compatibility on some older devices and APIs, particularly ' +
-			' WebGL 1.0.',
-		{ validator: Validator.BOOLEAN },
+		{ validator: Validator.NUMBER, default: ETC1S_DEFAULTS.maxSelectors },
 	)
 	.option(
 		'--rdo-threshold <rdo_threshold>',
 		'Set endpoint and selector RDO quality threshold. Lower' +
 			' is higher quality but less quality per output bit (try 1.0-3.0).' +
 			' Overrides --quality.',
-		{ validator: Validator.NUMBER },
+		{ validator: Validator.NUMBER, default: ETC1S_DEFAULTS.rdoThreshold },
 	)
 	.option(
-		'--rdo-off',
-		'Disable endpoint and selector RDO (slightly' +
-			' faster, less noisy output, but lower quality per output bit).',
-		{ validator: Validator.BOOLEAN },
+		'--rdo',
+		'Enable endpoint and selector RDO (slightly' + ' faster, less noisy output, but lower quality per output bit).',
+		{ validator: Validator.BOOLEAN, default: ETC1S_DEFAULTS.rdo },
 	)
 	.option('--jobs <num_jobs>', 'Spawns up to num_jobs instances of toktx', {
 		validator: Validator.NUMBER,
 		default: ETC1S_DEFAULTS.jobs,
 	})
-	.action(({ args, options, logger }) => {
+	.action(async ({ args, options, logger }) => {
+		const { default: encoder } = await import('sharp');
 		const mode = Mode.ETC1S;
 		const pattern = options.pattern ? micromatch.makeRe(String(options.pattern), MICROMATCH_OPTIONS) : null;
-		return Session.create(io, logger, args.input, args.output).transform(toktx({ ...options, mode, pattern }));
+		const slots = options.slots ? micromatch.makeRe(String(options.slots), MICROMATCH_OPTIONS) : null;
+		return Session.create(io, logger, args.input, args.output).transform(
+			toktx({ ...options, encoder, mode, pattern, slots }),
+		);
 	});
 
 // UASTC
@@ -1281,22 +1415,14 @@ for textures where the quality is sufficient.`.trim(),
 			'\n4     | Very slow | 48.24dB',
 		{ validator: [0, 1, 2, 3, 4], default: UASTC_DEFAULTS.level },
 	)
+	.option('--rdo', 'Enable UASTC RDO post-processing.', { validator: Validator.BOOLEAN, default: UASTC_DEFAULTS.rdo })
 	.option(
-		'--power-of-two',
-		'Resizes any non-power-of-two textures to the closest power-of-two' +
-			' dimensions, not exceeding 2048x2048px. Required for ' +
-			' compatibility on some older devices and APIs, particularly ' +
-			' WebGL 1.0.',
-		{ validator: Validator.BOOLEAN },
-	)
-	.option(
-		'--rdo <uastc_rdo_l>',
-		'Enable UASTC RDO post-processing and optionally set UASTC RDO' +
-			' quality scalar (lambda).  Lower values yield higher' +
+		'--rdo-lambda <uastc_rdo_l>',
+		'Set UASTC RDO quality scalar (lambda). Lower values yield higher' +
 			' quality/larger LZ compressed files, higher values yield lower' +
 			' quality/smaller LZ compressed files. A good range to try is [.25, 10].' +
 			' For normal maps, try [.25, .75]. Full range is [.001, 10.0].',
-		{ validator: Validator.NUMBER, default: UASTC_DEFAULTS.rdo },
+		{ validator: Validator.NUMBER, default: UASTC_DEFAULTS.rdoLambda },
 	)
 	.option(
 		'--rdo-dictionary-size <uastc_rdo_d>',
@@ -1350,10 +1476,14 @@ for textures where the quality is sufficient.`.trim(),
 		validator: Validator.NUMBER,
 		default: UASTC_DEFAULTS.jobs,
 	})
-	.action(({ args, options, logger }) => {
+	.action(async ({ args, options, logger }) => {
+		const { default: encoder } = await import('sharp');
 		const mode = Mode.UASTC;
 		const pattern = options.pattern ? micromatch.makeRe(String(options.pattern), MICROMATCH_OPTIONS) : null;
-		Session.create(io, logger, args.input, args.output).transform(toktx({ ...options, mode, pattern }));
+		const slots = options.slots ? micromatch.makeRe(String(options.slots), MICROMATCH_OPTIONS) : null;
+		Session.create(io, logger, args.input, args.output).transform(
+			toktx({ ...options, encoder, mode, pattern, slots }),
+		);
 	});
 
 // KTXFIX
@@ -1389,26 +1519,33 @@ program
 	.help(TEXTURE_COMPRESS_SUMMARY.replace(/{VARIANT}/g, 'AVIF'))
 	.argument('<input>', INPUT_DESC)
 	.argument('<output>', OUTPUT_DESC)
-	.option('--formats <formats>', 'Texture formats to include (glob)', {
-		validator: ['image/png', 'image/jpeg', '*'],
+	.option('--pattern <pattern>', 'Pattern (glob) to match textures, by name or URI.', {
+		validator: Validator.STRING,
+	})
+	.option('--formats <formats>', 'Texture formats to include', {
+		validator: [...TEXTURE_COMPRESS_SUPPORTED_FORMATS, '*'],
 		default: '*',
 	})
 	.option('--slots <slots>', 'Texture slots to include (glob)', { validator: Validator.STRING, default: '*' })
 	.option('--quality <quality>', 'Quality, 1-100', { validator: Validator.NUMBER })
 	.option('--effort <effort>', 'Level of CPU effort to reduce file size, 0-100', { validator: Validator.NUMBER })
 	.option('--lossless <lossless>', 'Use lossless compression mode', { validator: Validator.BOOLEAN, default: false })
-	.action(({ args, options, logger }) => {
-		const formats = micromatch.makeRe(String(options.formats), MICROMATCH_OPTIONS);
+	.action(async ({ args, options, logger }) => {
+		const pattern = options.pattern ? micromatch.makeRe(String(options.pattern), MICROMATCH_OPTIONS) : null;
+		const formats = regexFromArray([options.formats] as string[]);
 		const slots = micromatch.makeRe(String(options.slots), MICROMATCH_OPTIONS);
+		const { default: encoder } = await import('sharp');
 		return Session.create(io, logger, args.input, args.output).transform(
 			textureCompress({
 				targetFormat: 'avif',
-				encoder: sharp,
+				encoder,
+				pattern,
 				formats,
 				slots,
 				quality: options.quality as number,
 				effort: options.effort as number,
 				lossless: options.lossless as boolean,
+				limitInputPixels: options.limitInputPixels as boolean,
 			}),
 		);
 	});
@@ -1420,8 +1557,11 @@ program
 	.help(TEXTURE_COMPRESS_SUMMARY.replace(/{VARIANT}/g, 'WebP'))
 	.argument('<input>', INPUT_DESC)
 	.argument('<output>', OUTPUT_DESC)
-	.option('--formats <formats>', 'Texture formats to include (glob)', {
-		validator: ['image/png', 'image/jpeg', '*'],
+	.option('--pattern <pattern>', 'Pattern (glob) to match textures, by name or URI.', {
+		validator: Validator.STRING,
+	})
+	.option('--formats <formats>', 'Texture formats to include', {
+		validator: [...TEXTURE_COMPRESS_SUPPORTED_FORMATS, '*'],
 		default: '*',
 	})
 	.option('--slots <slots>', 'Texture slots to include (glob)', { validator: Validator.STRING, default: '*' })
@@ -1432,19 +1572,23 @@ program
 		validator: Validator.BOOLEAN,
 		default: false,
 	})
-	.action(({ args, options, logger }) => {
-		const formats = micromatch.makeRe(String(options.formats), MICROMATCH_OPTIONS);
+	.action(async ({ args, options, logger }) => {
+		const pattern = options.pattern ? micromatch.makeRe(String(options.pattern), MICROMATCH_OPTIONS) : null;
+		const formats = regexFromArray([options.formats] as string[]);
 		const slots = micromatch.makeRe(String(options.slots), MICROMATCH_OPTIONS);
+		const { default: encoder } = await import('sharp');
 		return Session.create(io, logger, args.input, args.output).transform(
 			textureCompress({
 				targetFormat: 'webp',
-				encoder: sharp,
+				encoder,
+				pattern,
 				formats,
 				slots,
 				quality: options.quality as number,
 				effort: options.effort as number,
 				lossless: options.lossless as boolean,
 				nearLossless: options.nearLossless as boolean,
+				limitInputPixels: options.limitInputPixels as boolean,
 			}),
 		);
 	});
@@ -1456,24 +1600,31 @@ program
 	.help(TEXTURE_COMPRESS_SUMMARY.replace(/{VARIANT}/g, 'PNG'))
 	.argument('<input>', INPUT_DESC)
 	.argument('<output>', OUTPUT_DESC)
-	.option('--formats <formats>', 'Texture formats to include (glob)', {
-		validator: ['image/png', 'image/jpeg', '*'],
-		default: 'image/png',
+	.option('--pattern <pattern>', 'Pattern (glob) to match textures, by name or URI.', {
+		validator: Validator.STRING,
+	})
+	.option('--formats <formats>', 'Texture formats to include', {
+		validator: [...TEXTURE_COMPRESS_SUPPORTED_FORMATS, '*'],
+		default: 'png',
 	})
 	.option('--slots <slots>', 'Texture slots to include (glob)', { validator: Validator.STRING, default: '*' })
 	.option('--quality <quality>', 'Quality, 1-100', { validator: Validator.NUMBER })
 	.option('--effort <effort>', 'Level of CPU effort to reduce file size, 0-100', { validator: Validator.NUMBER })
-	.action(({ args, options, logger }) => {
-		const formats = micromatch.makeRe(String(options.formats), MICROMATCH_OPTIONS);
+	.action(async ({ args, options, logger }) => {
+		const pattern = options.pattern ? micromatch.makeRe(String(options.pattern), MICROMATCH_OPTIONS) : null;
+		const formats = regexFromArray([options.formats] as string[]);
 		const slots = micromatch.makeRe(String(options.slots), MICROMATCH_OPTIONS);
+		const { default: encoder } = await import('sharp');
 		return Session.create(io, logger, args.input, args.output).transform(
 			textureCompress({
 				targetFormat: 'png',
-				encoder: sharp,
+				encoder,
+				pattern,
 				formats,
 				slots,
 				quality: options.quality as number,
 				effort: options.effort as number,
+				limitInputPixels: options.limitInputPixels as boolean,
 			}),
 		);
 	});
@@ -1485,22 +1636,29 @@ program
 	.help(TEXTURE_COMPRESS_SUMMARY.replace(/{VARIANT}/g, 'JPEG'))
 	.argument('<input>', INPUT_DESC)
 	.argument('<output>', OUTPUT_DESC)
-	.option('--formats <formats>', 'Texture formats to include (glob)', {
-		validator: ['image/png', 'image/jpeg', '*'],
-		default: 'image/jpeg',
+	.option('--pattern <pattern>', 'Pattern (glob) to match textures, by name or URI.', {
+		validator: Validator.STRING,
+	})
+	.option('--formats <formats>', 'Texture formats to include', {
+		validator: [...TEXTURE_COMPRESS_SUPPORTED_FORMATS, '*'],
+		default: 'jpeg',
 	})
 	.option('--slots <slots>', 'Texture slots to include (glob)', { validator: Validator.STRING, default: '*' })
 	.option('--quality <quality>', 'Quality, 1-100', { validator: Validator.NUMBER })
-	.action(({ args, options, logger }) => {
-		const formats = micromatch.makeRe(String(options.formats), MICROMATCH_OPTIONS);
+	.action(async ({ args, options, logger }) => {
+		const pattern = options.pattern ? micromatch.makeRe(String(options.pattern), MICROMATCH_OPTIONS) : null;
+		const formats = regexFromArray([options.formats] as string[]);
 		const slots = micromatch.makeRe(String(options.slots), MICROMATCH_OPTIONS);
+		const { default: encoder } = await import('sharp');
 		return Session.create(io, logger, args.input, args.output).transform(
 			textureCompress({
 				targetFormat: 'jpeg',
-				encoder: sharp,
+				encoder,
+				pattern,
 				formats,
 				slots,
 				quality: options.quality as number,
+				limitInputPixels: options.limitInputPixels as boolean,
 			}),
 		);
 	});
@@ -1586,7 +1744,7 @@ program
 		`
 Scans all Accessors in the Document, detecting whether each Accessor would
 benefit from sparse data storage. Currently, sparse data storage is used only
-when many values (≥ 1/3) are zeroes. Particularly for assets using morph
+when many values (>= 1/3) are zeroes. Particularly for assets using morph
 target ("shape key") animation, sparse data storage may significantly reduce
 file sizes.
 	`.trim(),
@@ -1597,11 +1755,11 @@ file sizes.
 		Session.create(io, logger, args.input, args.output).transform(sparse(options as unknown as SparseOptions)),
 	);
 
-program.option('--allow-http', 'Allows reads from HTTP requests.', {
+program.option('--allow-net', 'Allows reads from network requests.', {
 	default: false,
 	validator: Validator.BOOLEAN,
 	action: ({ options }) => {
-		if (options.allowHttp) io.setAllowHTTP(true);
+		if (options.allowNet) io.setAllowNetwork(true);
 	},
 });
 program.option('--vertex-layout <layout>', 'Vertex buffer layout preset.', {
@@ -1614,6 +1772,16 @@ program.option('--vertex-layout <layout>', 'Vertex buffer layout preset.', {
 program.option('--config <path>', 'Installs custom commands or extensions. (EXPERIMENTAL)', {
 	validator: Validator.STRING,
 });
+program.option(
+	'--limit-input-pixels',
+	'Attempts to avoid processing very high resolution images, where memory or ' +
+		'other limits may be exceeded. (EXPERIMENTAL)',
+	{
+		validator: Validator.BOOLEAN,
+		default: true,
+		hidden: true,
+	},
+);
 program.disableGlobalOption('--quiet');
 program.disableGlobalOption('--no-color');
 

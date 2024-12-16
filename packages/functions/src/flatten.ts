@@ -1,15 +1,26 @@
 import { Document, Node, PropertyType, Transform } from '@gltf-transform/core';
 import { clearNodeParent } from './clear-node-parent.js';
 import { prune } from './prune.js';
-import { createTransform } from './utils.js';
+import { assignDefaults, createTransform } from './utils.js';
 
 const NAME = 'flatten';
 
 /** Options for the {@link flatten} function. */
-// eslint-disable-next-line @typescript-eslint/no-empty-interface
-export interface FlattenOptions {}
+export interface FlattenOptions {
+	/**
+	 * Whether to perform cleanup steps after completing the operation. Recommended, and enabled by
+	 * default. Cleanup removes temporary resources created during the operation, but may also remove
+	 * pre-existing unused or duplicate resources in the {@link Document}. Applications that require
+	 * keeping these resources may need to disable cleanup, instead calling {@link dedup} and
+	 * {@link prune} manually (with customized options) later in the processing pipeline.
+	 * @experimental
+	 */
+	cleanup?: boolean;
+}
 
-export const FLATTEN_DEFAULTS: Required<FlattenOptions> = {};
+export const FLATTEN_DEFAULTS: Required<FlattenOptions> = {
+	cleanup: true,
+};
 
 /**
  * Flattens the scene graph, leaving {@link Node Nodes} with
@@ -31,8 +42,7 @@ export const FLATTEN_DEFAULTS: Required<FlattenOptions> = {};
  * @category Transforms
  */
 export function flatten(_options: FlattenOptions = FLATTEN_DEFAULTS): Transform {
-	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	const options = { ...FLATTEN_DEFAULTS, ..._options } as Required<FlattenOptions>;
+	const options = assignDefaults(FLATTEN_DEFAULTS, _options);
 
 	return createTransform(NAME, async (document: Document): Promise<void> => {
 		const root = document.getRoot();
@@ -46,12 +56,12 @@ export function flatten(_options: FlattenOptions = FLATTEN_DEFAULTS): Transform 
 			}
 		}
 
-		// (2) Mark animated nodes.
+		// (2) Mark nodes with TRS animation.
 		const animated = new Set<Node>();
 		for (const animation of root.listAnimations()) {
 			for (const channel of animation.listChannels()) {
 				const node = channel.getTargetNode();
-				if (node) {
+				if (node && channel.getTargetPath() !== 'weights') {
 					animated.add(node);
 				}
 			}
@@ -90,7 +100,9 @@ export function flatten(_options: FlattenOptions = FLATTEN_DEFAULTS): Transform 
 		}
 
 		// (5) Clean up leaf nodes.
-		await document.transform(prune({ propertyTypes: [PropertyType.NODE], keepLeaves: false }));
+		if (options.cleanup) {
+			await document.transform(prune({ propertyTypes: [PropertyType.NODE], keepLeaves: false }));
+		}
 
 		logger.debug(`${NAME}: Complete.`);
 	});

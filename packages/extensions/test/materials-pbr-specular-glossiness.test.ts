@@ -1,6 +1,7 @@
 import test from 'ava';
 import { Document, NodeIO } from '@gltf-transform/core';
 import { KHRMaterialsPBRSpecularGlossiness, PBRSpecularGlossiness } from '@gltf-transform/extensions';
+import { cloneDocument } from '@gltf-transform/functions';
 
 const WRITER_OPTIONS = { basename: 'extensionTest' };
 
@@ -34,12 +35,12 @@ test('basic', async (t) => {
 				specularGlossinessTexture: { index: 0 },
 			},
 		},
-		'writes specGloss extension'
+		'writes specGloss extension',
 	);
 	t.deepEqual(
 		jsonDoc.json.extensionsUsed,
 		[KHRMaterialsPBRSpecularGlossiness.EXTENSION_NAME],
-		'writes extensionsUsed'
+		'writes extensionsUsed',
 	);
 
 	specGlossExtension.dispose();
@@ -66,7 +67,7 @@ test('copy', (t) => {
 		.setSpecularGlossinessTexture(doc.createTexture('specGloss'));
 	doc.createMaterial().setExtension('KHR_materials_pbrSpecularGlossiness', specGloss);
 
-	const doc2 = doc.clone();
+	const doc2 = cloneDocument(doc);
 	const specGloss2 = doc2
 		.getRoot()
 		.listMaterials()[0]
@@ -77,11 +78,4 @@ test('copy', (t) => {
 	t.deepEqual(specGloss2.getSpecularFactor(), [0.9, 0.5, 0.8], 'copy specularFactor');
 	t.is(specGloss2.getGlossinessFactor(), 0.5, 'copy glossinessFactor');
 	t.is(specGloss2.getSpecularGlossinessTexture().getName(), 'specGloss', 'copy specularGlossinessTexture');
-});
-
-test('hex', (t) => {
-	const doc = new Document();
-	const specGlossExtension = doc.createExtension(KHRMaterialsPBRSpecularGlossiness);
-	const specGloss = specGlossExtension.createPBRSpecularGlossiness().setDiffuseHex(0x0000ff);
-	t.is(specGloss.getDiffuseHex(), 254, 'diffuseHex');
 });

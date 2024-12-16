@@ -1,20 +1,20 @@
 import { Document, ILogger, MathUtils, Mesh, Node, Primitive, Transform, vec3, vec4 } from '@gltf-transform/core';
 import { InstancedMesh, EXTMeshGPUInstancing } from '@gltf-transform/extensions';
-import { createTransform } from './utils.js';
+import { assignDefaults, createTransform } from './utils.js';
 
 const NAME = 'instance';
 
 export interface InstanceOptions {
-	/** Minimum number of meshes considered eligible for instancing. Default: 2. */
+	/** Minimum number of meshes considered eligible for instancing. Default: 5. */
 	min?: number;
 }
 
-const INSTANCE_DEFAULTS: Required<InstanceOptions> = {
-	min: 2,
+export const INSTANCE_DEFAULTS: Required<InstanceOptions> = {
+	min: 5,
 };
 
 /**
- * Creates GPU instances (with `EXT_mesh_gpu_instancing`) for shared {@link Mesh} references. In
+ * Creates GPU instances (with {@link EXTMeshGPUInstancing}) for shared {@link Mesh} references. In
  * engines supporting the extension, reused Meshes will be drawn with GPU instancing, greatly
  * reducing draw calls and improving performance in many cases. If you're not sure that identical
  * Meshes share vertex data and materials ("linked duplicates"), run {@link dedup} first to link them.
@@ -26,14 +26,14 @@ const INSTANCE_DEFAULTS: Required<InstanceOptions> = {
  *
  * await document.transform(
  * 	dedup(),
- * 	instance({min: 2}),
+ * 	instance({min: 5}),
  * );
  * ```
  *
  * @category Transforms
  */
 export function instance(_options: InstanceOptions = INSTANCE_DEFAULTS): Transform {
-	const options = { ...INSTANCE_DEFAULTS, ..._options } as Required<InstanceOptions>;
+	const options = assignDefaults(INSTANCE_DEFAULTS, _options);
 
 	return createTransform(NAME, (doc: Document): void => {
 		const logger = doc.getLogger();
@@ -56,6 +56,7 @@ export function instance(_options: InstanceOptions = INSTANCE_DEFAULTS): Transfo
 			scene.traverse((node) => {
 				const mesh = node.getMesh();
 				if (!mesh) return;
+				if (node.getExtension('EXT_mesh_gpu_instancing')) return;
 				meshInstances.set(mesh, (meshInstances.get(mesh) || new Set<Node>()).add(node));
 			});
 
@@ -94,27 +95,35 @@ export function instance(_options: InstanceOptions = INSTANCE_DEFAULTS): Transfo
 					if (!MathUtils.eq(t, [0, 0, 0])) needsTranslation = true;
 					if (!MathUtils.eq(r, [0, 0, 0, 1])) needsRotation = true;
 					if (!MathUtils.eq(s, [1, 1, 1])) needsScale = true;
-
-					// Mark the node for cleanup.
-					node.setMesh(null);
-					modifiedNodes.push(node);
 				}
 
 				if (!needsTranslation) batchTranslation.dispose();
 				if (!needsRotation) batchRotation.dispose();
 				if (!needsScale) batchScale.dispose();
 
-				pruneUnusedNodes(modifiedNodes, logger);
+				if (!needsTranslation && !needsRotation && !needsScale) {
+					batchNode.dispose();
+					batch.dispose();
+					continue;
+				}
+
+				// Mark nodes for cleanup.
+				for (const node of nodes) {
+					node.setMesh(null);
+					modifiedNodes.push(node);
+				}
 
 				numBatches++;
 				numInstances += nodes.length;
 			}
+
+			pruneUnusedNodes(modifiedNodes, logger);
 		}
 
 		if (numBatches > 0) {
 			logger.info(`${NAME}: Created ${numBatches} batches, with ${numInstances} total instances.`);
 		} else {
-			logger.info(`${NAME}: No meshes with ≥${options.min} parent nodes were found.`);
+			logger.info(`${NAME}: No meshes with >=${options.min} parent nodes were found.`);
 		}
 
 		if (batchExtension.listProperties().length === 0) {

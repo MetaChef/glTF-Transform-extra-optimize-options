@@ -9,7 +9,7 @@ import {
 	Transform,
 	vec4,
 } from '@gltf-transform/core';
-import { createTransform } from './utils.js';
+import { assignDefaults, createTransform } from './utils.js';
 import { prune } from './prune.js';
 import ndarray, { NdArray, TypedArray } from 'ndarray';
 import { savePixels } from 'ndarray-pixels';
@@ -23,14 +23,31 @@ export interface PaletteOptions {
 	blockSize?: number;
 	/**
 	 * Minimum number of blocks in the palette texture. If fewer unique
-	 * material values are found, no palettes will be generated. Default: 2.
+	 * material values are found, no palettes will be generated. Default: 5.
 	 */
 	min?: number;
+	/**
+	 * Whether to keep unused vertex attributes, such as UVs without an assigned
+	 * texture. If kept, unused UV coordinates may prevent palette texture
+	 * creation. Default: false.
+	 */
+	keepAttributes?: boolean;
+	/**
+	 * Whether to perform cleanup steps after completing the operation. Recommended, and enabled by
+	 * default. Cleanup removes temporary resources created during the operation, but may also remove
+	 * pre-existing unused or duplicate resources in the {@link Document}. Applications that require
+	 * keeping these resources may need to disable cleanup, instead calling {@link dedup} and
+	 * {@link prune} manually (with customized options) later in the processing pipeline.
+	 * @experimental
+	 */
+	cleanup?: boolean;
 }
 
 export const PALETTE_DEFAULTS: Required<PaletteOptions> = {
 	blockSize: 4,
-	min: 2,
+	min: 5,
+	keepAttributes: false,
+	cleanup: true,
 };
 
 /**
@@ -69,7 +86,7 @@ export const PALETTE_DEFAULTS: Required<PaletteOptions> = {
  * @category Transforms
  */
 export function palette(_options: PaletteOptions = PALETTE_DEFAULTS): Transform {
-	const options = { ...PALETTE_DEFAULTS, ..._options } as Required<PaletteOptions>;
+	const options = assignDefaults(PALETTE_DEFAULTS, _options);
 	const blockSize = Math.max(options.blockSize, 1);
 	const min = Math.max(options.min, 1);
 
@@ -78,13 +95,16 @@ export function palette(_options: PaletteOptions = PALETTE_DEFAULTS): Transform 
 		const root = document.getRoot();
 
 		// Find and remove unused TEXCOORD_n attributes.
-		await document.transform(
-			prune({
-				keepAttributes: false,
-				keepLeaves: true,
-				propertyTypes: [PropertyType.ACCESSOR],
-			})
-		);
+		if (!options.keepAttributes) {
+			await document.transform(
+				prune({
+					propertyTypes: [PropertyType.ACCESSOR],
+					keepAttributes: false,
+					keepIndices: true,
+					keepLeaves: true,
+				}),
+			);
+		}
 
 		const prims = new Set<Primitive>();
 		const materials = new Set<Material>();
@@ -172,7 +192,7 @@ export function palette(_options: PaletteOptions = PALETTE_DEFAULTS): Transform 
 		}
 
 		if (!(baseColorTexture || emissiveTexture || metallicRoughnessTexture)) {
-			logger.debug(`${NAME}: No material property has ≥${min} unique values. Exiting.`);
+			logger.debug(`${NAME}: No material property has >=${min} unique values. Exiting.`);
 			return;
 		}
 
@@ -290,7 +310,9 @@ export function palette(_options: PaletteOptions = PALETTE_DEFAULTS): Transform 
 			prim.setMaterial(dstMaterial).setAttribute('TEXCOORD_0', uv);
 		}
 
-		await document.transform(prune({ propertyTypes: [PropertyType.MATERIAL] }));
+		if (options.cleanup) {
+			await document.transform(prune({ propertyTypes: [PropertyType.MATERIAL] }));
+		}
 
 		logger.debug(`${NAME}: Complete.`);
 	});

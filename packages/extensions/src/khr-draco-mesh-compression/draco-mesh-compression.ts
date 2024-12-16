@@ -120,7 +120,7 @@ export class KHRDracoMeshCompression extends Extension {
 
 	/**
 	 * Compression method. `EncoderMethod.EDGEBREAKER` usually provides a higher compression ratio,
-	 * while `EncoderMethod.SEQUENTIAL` better preserves original verter order.
+	 * while `EncoderMethod.SEQUENTIAL` better preserves original vertex order.
 	 */
 	public static readonly EncoderMethod = EncoderMethod;
 
@@ -279,6 +279,14 @@ export class KHRDracoMeshCompression extends Extension {
 			context.accessorIndexMap.set(indices, accessorDefs.length);
 			accessorDefs.push(indicesDef);
 
+			// In rare cases Draco increases vertex count, requiring a larger index component type.
+			// https://github.com/donmccurdy/glTF-Transform/issues/1370
+			if (encodedPrim.numVertices > 65534 && Accessor.getComponentSize(indicesDef.componentType) <= 2) {
+				indicesDef.componentType = Accessor.ComponentType.UNSIGNED_INT;
+			} else if (encodedPrim.numVertices > 254 && Accessor.getComponentSize(indicesDef.componentType) <= 1) {
+				indicesDef.componentType = Accessor.ComponentType.UNSIGNED_SHORT;
+			}
+
 			// Create attribute definitions, update count.
 			for (const semantic of prim.listSemantics()) {
 				const attribute = prim.getAttribute(semantic)!;
@@ -350,19 +358,29 @@ function listDracoPrimitives(doc: Document): Map<Primitive, string> {
 	const included = new Set<Primitive>();
 	const excluded = new Set<Primitive>();
 
+	let nonIndexed = 0;
+	let nonTriangles = 0;
+
 	// Support compressing only indexed, mode=TRIANGLES primitives.
 	for (const mesh of doc.getRoot().listMeshes()) {
 		for (const prim of mesh.listPrimitives()) {
 			if (!prim.getIndices()) {
 				excluded.add(prim);
-				logger.warn(`[${NAME}] Skipping Draco compression on non-indexed primitive.`);
+				nonIndexed++;
 			} else if (prim.getMode() !== Primitive.Mode.TRIANGLES) {
 				excluded.add(prim);
-				logger.warn(`[${NAME}] Skipping Draco compression on non-TRIANGLES primitive.`);
+				nonTriangles++;
 			} else {
 				included.add(prim);
 			}
 		}
+	}
+
+	if (nonIndexed > 0) {
+		logger.warn(`[${NAME}] Skipping Draco compression of ${nonIndexed} non-indexed primitives.`);
+	}
+	if (nonTriangles > 0) {
+		logger.warn(`[${NAME}] Skipping Draco compression of ${nonTriangles} non-TRIANGLES primitives.`);
 	}
 
 	// Create an Accessor->index mapping.

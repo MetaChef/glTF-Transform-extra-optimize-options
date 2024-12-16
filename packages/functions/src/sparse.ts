@@ -1,5 +1,5 @@
 import { Document, MathUtils, Transform } from '@gltf-transform/core';
-import { createTransform } from './utils.js';
+import { assignDefaults, createTransform } from './utils.js';
 
 const NAME = 'sparse';
 
@@ -19,7 +19,7 @@ const SPARSE_DEFAULTS: Required<SparseOptions> = {
 /**
  * Scans all {@link Accessor Accessors} in the Document, detecting whether each Accessor
  * would benefit from sparse data storage. Currently, sparse data storage is used only
- * when many values (≥ ratio) are zeroes. Particularly for assets using morph target
+ * when many values (>= ratio) are zeroes. Particularly for assets using morph target
  * ("shape key") animation, sparse data storage may significantly reduce file sizes.
  *
  * Example:
@@ -39,7 +39,7 @@ const SPARSE_DEFAULTS: Required<SparseOptions> = {
  * @category Transforms
  */
 export function sparse(_options: SparseOptions = SPARSE_DEFAULTS): Transform {
-	const options = { ...SPARSE_DEFAULTS, ..._options } as Required<SparseOptions>;
+	const options = assignDefaults(SPARSE_DEFAULTS, _options);
 
 	const ratio = options.ratio;
 	if (ratio < 0 || ratio > 1) {

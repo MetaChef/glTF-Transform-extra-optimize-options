@@ -2,15 +2,18 @@ import type { Document, Transform } from '@gltf-transform/core';
 import { EXTMeshoptCompression } from '@gltf-transform/extensions';
 import type { MeshoptEncoder } from 'meshoptimizer';
 import { reorder } from './reorder.js';
-import { quantize } from './quantize.js';
-import { createTransform } from './utils.js';
+import { QUANTIZE_DEFAULTS, QuantizeOptions, quantize } from './quantize.js';
+import { assignDefaults, createTransform } from './utils.js';
 
-export interface MeshoptOptions {
+export interface MeshoptOptions extends Omit<QuantizeOptions, 'pattern' | 'patternTargets'> {
 	encoder: unknown;
 	level?: 'medium' | 'high';
 }
 
-export const MESHOPT_DEFAULTS: Required<Omit<MeshoptOptions, 'encoder'>> = { level: 'high' };
+export const MESHOPT_DEFAULTS: Required<Omit<MeshoptOptions, 'encoder'>> = {
+	level: 'high',
+	...QUANTIZE_DEFAULTS,
+};
 
 const NAME = 'meshopt';
 
@@ -28,19 +31,19 @@ const NAME = 'meshopt';
  *
  * ```javascript
  * import { MeshoptEncoder } from 'meshoptimizer';
- * import { reorder } from '@gltf-transform/functions';
+ * import { meshopt } from '@gltf-transform/functions';
  *
  * await MeshoptEncoder.ready;
  *
  * await document.transform(
- *   reorder({encoder: MeshoptEncoder, level: 'medium'})
+ *   meshopt({encoder: MeshoptEncoder, level: 'medium'})
  * );
  * ```
  *
  * @category Transforms
  */
 export function meshopt(_options: MeshoptOptions): Transform {
-	const options = { ...MESHOPT_DEFAULTS, ..._options } as Required<MeshoptOptions>;
+	const options = assignDefaults(MESHOPT_DEFAULTS, _options);
 	const encoder = options.encoder as typeof MeshoptEncoder | undefined;
 
 	if (!encoder) {
@@ -48,20 +51,39 @@ export function meshopt(_options: MeshoptOptions): Transform {
 	}
 
 	return createTransform(NAME, async (document: Document): Promise<void> => {
+		let pattern: RegExp;
+		let patternTargets: RegExp;
+		let quantizeNormal = options.quantizeNormal;
+
+		if (document.getRoot().listAccessors().length === 0) {
+			return;
+		}
+
+		// IMPORTANT: Vertex attributes should be quantized in 'high' mode IFF they are
+		// _not_ filtered in 'packages/extensions/src/ext-meshopt-compression/encoder.ts'.
+		// Note that normals and tangents use octahedral filters, but _morph_ normals
+		// and tangents do not.
+		// See: https://github.com/donmccurdy/glTF-Transform/issues/1142
+		if (options.level === 'medium') {
+			pattern = /.*/;
+			patternTargets = /.*/;
+		} else {
+			pattern = /^(POSITION|TEXCOORD|JOINTS|WEIGHTS|COLOR)(_\d+)?$/;
+			patternTargets = /^(POSITION|TEXCOORD|JOINTS|WEIGHTS|COLOR|NORMAL|TANGENT)(_\d+)?$/;
+			quantizeNormal = Math.min(quantizeNormal, 8); // See meshopt::getMeshoptFilter.
+		}
+
 		await document.transform(
 			reorder({
 				encoder: encoder,
 				target: 'size',
 			}),
 			quantize({
-				// IMPORTANT: Vertex attributes should be quantized in 'high' mode IFF they are
-				// _not_ filtered in 'packages/extensions/src/ext-meshopt-compression/encoder.ts'.
-				pattern: options.level === 'medium' ? /.*/ : /^(POSITION|TEXCOORD|JOINTS|WEIGHTS)(_\d+)?$/,
-				quantizePosition: 14,
-				quantizeTexcoord: 12,
-				quantizeColor: 8,
-				quantizeNormal: 8,
-			})
+				...options,
+				pattern,
+				patternTargets,
+				quantizeNormal,
+			}),
 		);
 
 		document

@@ -13,8 +13,9 @@ import { invert, multiply } from 'gl-matrix/mat4';
 import { joinPrimitives } from './join-primitives.js';
 import { prune } from './prune.js';
 import { transformPrimitive } from './transform-primitive.js';
-import { createPrimGroupKey, createTransform, formatLong, isUsed } from './utils.js';
+import { assignDefaults, createPrimGroupKey, createTransform, formatLong, isUsed } from './utils.js';
 import { dequantizeAttribute } from './dequantize.js';
+import { compactPrimitive } from './compact-primitive.js';
 
 const NAME = 'join';
 
@@ -29,7 +30,6 @@ const _matrix = [
 ] as mat4;
 
 /** Options for the {@link join} function. */
-// eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface JoinOptions {
 	/**
 	 * Prevents joining distinct {@link Mesh Meshes} and {@link Node Nodes}.
@@ -37,18 +37,28 @@ export interface JoinOptions {
 	 * only _named_ Nodes and Meshes, use
 	 * {@link JoinOptions.keepNamed keepNamed} instead. Default: false.
 	 */
-	keepMeshes: boolean;
+	keepMeshes?: boolean;
 	/**
 	 * Prevents joining _named_ {@link Mesh Meshes} and {@link Node Nodes}.
 	 * If {@link JoinOptions.keepMeshes keepMeshes} is enabled, keepNamed will
 	 * have no effect. Default: false.
 	 */
-	keepNamed: boolean;
+	keepNamed?: boolean;
+	/**
+	 * Whether to perform cleanup steps after completing the operation. Recommended, and enabled by
+	 * default. Cleanup removes temporary resources created during the operation, but may also remove
+	 * pre-existing unused or duplicate resources in the {@link Document}. Applications that require
+	 * keeping these resources may need to disable cleanup, instead calling {@link dedup} and
+	 * {@link prune} manually (with customized options) later in the processing pipeline.
+	 * @experimental
+	 */
+	cleanup?: boolean;
 }
 
 export const JOIN_DEFAULTS: Required<JoinOptions> = {
 	keepMeshes: false,
 	keepNamed: false,
+	cleanup: true,
 };
 
 /**
@@ -79,7 +89,7 @@ export const JOIN_DEFAULTS: Required<JoinOptions> = {
  * @category Transforms
  */
 export function join(_options: JoinOptions = JOIN_DEFAULTS): Transform {
-	const options = { ...JOIN_DEFAULTS, ..._options } as Required<JoinOptions>;
+	const options = assignDefaults(JOIN_DEFAULTS, _options);
 
 	return createTransform(NAME, async (document: Document): Promise<void> => {
 		const root = document.getRoot();
@@ -92,13 +102,16 @@ export function join(_options: JoinOptions = JOIN_DEFAULTS): Transform {
 		}
 
 		// Clean up.
-		await document.transform(
-			prune({
-				propertyTypes: [NODE, MESH, PRIMITIVE, ACCESSOR],
-				keepLeaves: false,
-				keepAttributes: true,
-			}),
-		);
+		if (options.cleanup) {
+			await document.transform(
+				prune({
+					propertyTypes: [NODE, MESH, PRIMITIVE, ACCESSOR],
+					keepAttributes: true,
+					keepIndices: true,
+					keepLeaves: false,
+				}),
+			);
+		}
 
 		logger.debug(`${NAME}: Complete.`);
 	});
@@ -144,6 +157,7 @@ function _joinLevel(document: Document, parent: Node | Scene, options: Required<
 			const material = prim.getMaterial();
 			if (material && material.getExtension('KHR_materials_volume')) continue;
 
+			compactPrimitive(prim);
 			dequantizeTransformableAttributes(prim);
 
 			let key = createPrimGroupKey(prim);
@@ -203,9 +217,11 @@ function _joinLevel(document: Document, parent: Node | Scene, options: Required<
 			let prim = prims[i];
 			primMesh.removePrimitive(prim);
 
-			// Primitives may be reused directly, or their attributes may be
-			// used in another Primitive with a different Material.
-			if (isUsed(prim) || hasSharedAttributes(prim)) {
+			// If Primitive is still in use after being removed from the
+			// current mesh, above, make a deep copy. Because compactPrimitive()
+			// was applied earlier in join(), we know the full vertex streams are
+			// used, and no accessors are shared.
+			if (isUsed(prim)) {
 				prim = prims[i] = _deepClonePrimitive(prims[i]);
 			}
 
@@ -228,6 +244,7 @@ function _joinLevel(document: Document, parent: Node | Scene, options: Required<
 }
 
 function _deepClonePrimitive(src: Primitive): Primitive {
+	// compactPrimitive already applied; no vertices are unused.
 	const dst = src.clone();
 	for (const semantic of dst.listSemantics()) {
 		dst.setAttribute(semantic, dst.getAttribute(semantic)!.clone());
@@ -235,17 +252,6 @@ function _deepClonePrimitive(src: Primitive): Primitive {
 	const indices = dst.getIndices();
 	if (indices) dst.setIndices(indices.clone());
 	return dst;
-}
-
-function hasSharedAttributes(prim: Primitive): boolean {
-	for (const attribute of prim.listAttributes()) {
-		for (const parent of attribute.listParents()) {
-			if (parent !== prim && parent.propertyType !== ROOT) {
-				return true;
-			}
-		}
-	}
-	return false;
 }
 
 /**
@@ -257,8 +263,6 @@ function hasSharedAttributes(prim: Primitive): boolean {
 function dequantizeTransformableAttributes(prim: Primitive) {
 	for (const semantic of ['POSITION', 'NORMAL', 'TANGENT']) {
 		const attribute = prim.getAttribute(semantic);
-		if (attribute && attribute.getComponentSize() < 4) {
-			dequantizeAttribute(semantic, attribute, { pattern: /.*/ });
-		}
+		if (attribute) dequantizeAttribute(attribute);
 	}
 }
